@@ -11,8 +11,11 @@
 
 ## Layering
 
-- `api/`: FastAPI routers only.
-- `services/`: business rules.
+- `api/`: FastAPI routers only 
+- `services/`: services for buisness .
 - `models/`: SQLAlchemy ORM definitions.
 - `schemas/`: Pydantic request and response models.
 - `core/`: configuration, security, dependencies, exception handling.
+
+
+#

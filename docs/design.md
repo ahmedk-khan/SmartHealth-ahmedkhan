@@ -1,4 +1,4 @@
-# Design Notes fro smarthhealth
+# Design Notes fro smarthhealth plateform"
 
 ## Data model
 

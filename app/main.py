@@ -7,7 +7,7 @@ from app.api import api_router
 from app.core.exceptions import AppError, format_app_error
 from app.db import init_db
 
-app = FastAPI(title="app")
+app = FastAPI(title="SmartHealth")
 
 
 @app.on_event("startup")
@@ -26,6 +26,16 @@ def validation_exception_handler(request: Request, exc: RequestValidationError) 
         status_code=422,
         content={"error": {"type": "validation_error", "message": "Request validation failed", "detail": exc.errors()}},
     )
+
+
+@app.exception_handler(PermissionError)
+def permission_error_handler(request: Request, exc: PermissionError) -> JSONResponse:
+    return JSONResponse(status_code=403, content={"error": {"type": "forbidden", "message": str(exc), "detail": None}})
+
+
+@app.exception_handler(ValueError)
+def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"error": {"type": "value_error", "message": str(exc), "detail": None}})
 
 
 @app.get("/")

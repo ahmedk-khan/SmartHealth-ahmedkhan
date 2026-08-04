@@ -19,13 +19,13 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(subject: str, expires_delta: Optional[datetime.timedelta] = None) -> str:
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc)
     if expires_delta is None:
         expires_delta = datetime.timedelta(minutes=settings.access_token_expire_minutes)
     payload: dict[str, Any] = {
         "sub": subject,
-        "iat": now,
-        "exp": now + expires_delta,
+        "iat": int(now.timestamp()),
+        "exp": int((now + expires_delta).timestamp()),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 

@@ -1,4 +1,6 @@
-from sqlalchemy import Column, ForeignKey, Integer, String, Table, Text
+import datetime
+
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -18,6 +20,9 @@ class Service(Base):
     name = Column(String(length=140), nullable=False, index=True)
     description = Column(Text, nullable=True)
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=False)
+    is_published = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
 
     department = relationship("Department", back_populates="services")
     providers = relationship(

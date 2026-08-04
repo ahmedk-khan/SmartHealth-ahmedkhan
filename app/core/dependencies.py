@@ -4,16 +4,16 @@ from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
+from app import db as db_module
 from app.core.exceptions import AppError
 from app.core.security import decode_access_token
-from app.db import SessionLocal
 from app.models import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
 def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
+    db = db_module.SessionLocal()
     try:
         yield db
     finally:
@@ -33,7 +33,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 def require_role(*roles: str) -> Callable[[User], User]:
     def dependency(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role not in roles:
+        if current_user.role.value not in roles:
             raise AppError(
                 "Operation forbidden",
                 status_code=403,

@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db
-from app.core.security import create_access_token, get_password_hash, verify_password
 from app.core.exceptions import AppError
+from app.core.security import create_access_token, get_password_hash, verify_password
 from app.models import User
 from app.schemas.user import Token, UserCreate, UserLogin, UserRead
 
@@ -25,7 +25,7 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
-    return user
+    return UserRead.model_validate(user)
 
 
 @router.post("/login", response_model=Token)

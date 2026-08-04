@@ -1,4 +1,6 @@
-from sqlalchemy import Column, ForeignKey, Integer, Text
+import datetime
+
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, Text
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -12,6 +14,8 @@ class Provider(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
     bio = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
 
     user = relationship("User", back_populates="provider", uselist=False)
     department = relationship("Department", back_populates="providers")

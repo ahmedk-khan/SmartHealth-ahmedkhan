@@ -22,9 +22,10 @@ class Slot(Base):
     service_id = Column(Integer, ForeignKey("services.id"), nullable=False)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=True)
     status = Column(SAEnum(SlotStatus), nullable=False, default=SlotStatus.AVAILABLE)
-    start_datetime = Column(DateTime(timezone=False), nullable=False)
-    end_datetime = Column(DateTime(timezone=False), nullable=False)
-    created_at = Column(DateTime(timezone=False), default=datetime.datetime.utcnow, nullable=False)
+    start_datetime = Column(DateTime(timezone=True), nullable=False)
+    end_datetime = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
 
     provider = relationship("Provider", back_populates="slots")
     service = relationship("Service", back_populates="slots")

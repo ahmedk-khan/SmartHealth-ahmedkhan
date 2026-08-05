@@ -67,6 +67,18 @@ def upgrade() -> None:
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("department_id", sa.Integer(), nullable=False),
         sa.Column("is_published", sa.Boolean(), nullable=False),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "DRAFT",
+                "PUBLISHING",
+                "PUBLISHED",
+                "UNPUBLISHING",
+                "UNPUBLISHED",
+                name="servicestatus",
+            ),
+            nullable=False,
+        ),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["department_id"], ["departments.id"]),
@@ -82,6 +94,19 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["provider_id"], ["providers.id"]),
         sa.ForeignKeyConstraint(["service_id"], ["services.id"]),
         sa.PrimaryKeyConstraint("provider_id", "service_id"),
+    )
+
+    op.create_table(
+        "content_chunks",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("service_id", sa.Integer(), nullable=False),
+        sa.Column("chunk_index", sa.Integer(), nullable=False),
+        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["service_id"], ["services.id"]),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("service_id", "chunk_index", name="uq_content_chunk_service_index"),
     )
 
     op.create_table(

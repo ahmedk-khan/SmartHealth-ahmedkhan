@@ -1,8 +1,11 @@
+import datetime
+
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
-from app.models import Provider, Service, Slot, SlotStatus, User, UserRole
+from app.core.exceptions import AppError
+from app.models import Patient, Provider, Service, Slot, SlotStatus, User, UserRole
 from app.schemas.domain import PaginatedResponse, SlotCreate, SlotRead
 
 router = APIRouter(prefix="/slots", tags=["slots"])
@@ -20,6 +23,25 @@ def create_slot(payload: SlotCreate, db: Session = Depends(get_db), current_user
     db.add(slot)
     db.commit()
     db.refresh(slot)
+    return slot
+
+
+@router.post("/{slot_id}/reserve", response_model=SlotRead, status_code=status.HTTP_200_OK)
+def reserve_slot(slot_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role != UserRole.patient:
+        raise PermissionError("Forbidden")
+    patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+    if not patient:
+        raise ValueError("Patient profile not found")
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    updated = db.query(Slot).filter(Slot.id == slot_id, Slot.status == SlotStatus.AVAILABLE).update(
+        {"status": SlotStatus.RESERVED, "patient_id": patient.id, "updated_at": now}, synchronize_session=False
+    )
+    if updated != 1:
+        raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
+    db.commit()
+    slot = db.query(Slot).filter(Slot.id == slot_id).first()
     return slot
 
 

@@ -42,6 +42,14 @@ class ProviderRead(ProviderBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ServiceStatus(str, Enum):
+    DRAFT = "DRAFT"
+    PUBLISHING = "PUBLISHING"
+    PUBLISHED = "PUBLISHED"
+    UNPUBLISHING = "UNPUBLISHING"
+    UNPUBLISHED = "UNPUBLISHED"
+
+
 class ServiceBase(BaseModel):
     name: str
     description: Optional[str] = None
@@ -55,6 +63,7 @@ class ServiceCreate(ServiceBase):
 
 class ServiceRead(ServiceBase):
     id: int
+    status: ServiceStatus
     created_at: datetime
     updated_at: datetime
 

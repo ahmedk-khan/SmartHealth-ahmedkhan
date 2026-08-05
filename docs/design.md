@@ -124,6 +124,13 @@ Role rules:
 2. create a `Provider` linked to that department
 3. create a `Service` in that department
 4. call `POST /api/v1/slots` with `provider_id` and `service_id`
+5. call `POST /api/v1/slots/{slot_id}/reserve` to reserve an available slot
+
+### Slot reservation
+
+- Reservations use an atomic conditional update on `slots.status`.
+- The reservation query only succeeds when the slot is still `AVAILABLE`.
+- This prevents double-booking by ensuring the DB applies the update only once.
 
 ## Notes
 

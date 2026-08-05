@@ -9,6 +9,7 @@ services:
       - .env
     depends_on:
       - postgres
+      - temporal
 
   postgres:
     image: postgres:16
@@ -21,5 +22,20 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233"
+    environment:
+      - TEMPORAL_BROKER=sqlite
+      - TEMPORAL_WEB_PORT=7233
+      - TEMPORAL_GRPC_PORT=7233
+      - TEMPORAL_UI_ENABLED=true
+      - TEMPORAL_DB=sqlite
+      - TEMPORAL_DB_PATH=/data/temporal.db
+    volumes:
+      - temporal-data:/data
+
 volumes:
   pgdata:
+  temporal-data:

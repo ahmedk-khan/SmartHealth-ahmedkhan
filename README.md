@@ -80,6 +80,14 @@ SmartHealth is a FastAPI-based healthcare scheduling service with:
   - roles: `provider`, `admin`, `front_desk`
   - body: `name`, `description`, `department_id`, `is_published`
 
+- `POST /api/v1/services/{service_id}/publish`
+  - roles: `provider`, `admin`, `front_desk`
+  - starts a Temporal workflow to publish the service
+  - returns `202 Accepted` with `workflow_id`
+
+- `GET /api/v1/services/{service_id}/publish-status`
+  - queries the workflow status for a service publish
+
 - `GET /api/v1/services`
   - returns only published services
 

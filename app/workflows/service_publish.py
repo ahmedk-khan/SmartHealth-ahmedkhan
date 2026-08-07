@@ -84,12 +84,14 @@ async def mark_published(service_id: int, chunks: list[dict[str, Any]]) -> dict[
 class ServicePublishWorkflow:
     @workflow.run
     async def run(self, service_id: int) -> dict[str, Any]:
+        self._status = ServiceStatus.PUBLISHING.value
         published = await workflow.execute_activity(
             validate_service,
             service_id,
             start_to_close_timeout=workflow.Duration(seconds=30),
         )
         if published["status"] == ServiceStatus.PUBLISHED.value:
+            self._status = ServiceStatus.PUBLISHED.value
             return {"workflow_status": published["status"]}
 
         service_struct = await workflow.execute_activity(

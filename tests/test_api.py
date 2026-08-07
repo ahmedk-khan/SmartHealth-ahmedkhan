@@ -12,7 +12,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 from app.core import dependencies
 from app.db import Base
 from app.main import app
-from app.models import Department, Patient, Provider, Service, Slot, SlotStatus, User, UserRole
+from app.models import ContentChunk, Department, Patient, Provider, Service, Slot, SlotStatus, User, UserRole
 
 
 @pytest.fixture()
@@ -180,3 +180,48 @@ def test_duplicate_registration_is_rejected(client):
         json={"email": "dup@example.com", "password": "another", "role": "patient"},
     )
     assert second.status_code == 400
+
+
+def test_service_publish_starts_workflow_and_writes_chunks(client):
+    _create_user(client, "admin@example.com", "secret123", "admin")
+    admin_token = _login(client, "admin@example.com", "secret123")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    department_response = client.post(
+        "/api/v1/departments",
+        json={"name": "Neurology", "description": "Brain health"},
+        headers=admin_headers,
+    )
+    assert department_response.status_code == 200
+    department_id = department_response.json()["id"]
+
+    service_response = client.post(
+        "/api/v1/services",
+        json={"name": "MRI Scan", "description": "MRI diagnostic", "department_id": department_id, "is_published": False},
+        headers=admin_headers,
+    )
+    assert service_response.status_code == 200
+    service_id = service_response.json()["id"]
+
+    publish_response = client.post(f"/api/v1/services/{service_id}/publish", headers=admin_headers)
+    assert publish_response.status_code == 202
+    publish_payload = publish_response.json()
+    assert publish_payload["workflow_id"] == f"service-publish-{service_id}"
+
+    status_response = client.get(f"/api/v1/services/{service_id}/publish-status", headers=admin_headers)
+    assert status_response.status_code == 200
+    status_payload = status_response.json()
+    assert status_payload["workflow_id"] == f"service-publish-{service_id}"
+    assert status_payload["status"] in {"PUBLISHING", "PUBLISHED"}
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        service = db.query(Service).filter(Service.id == service_id).first()
+        assert service is not None
+        assert service.status == "PUBLISHED"
+        assert service.is_published is True
+        assert db.query(ContentChunk).filter(ContentChunk.service_id == service_id).count() >= 1
+    finally:
+        db.close()

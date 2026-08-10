@@ -138,6 +138,26 @@ class AppointmentStatusHistoryRead(AppointmentStatusHistoryBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class BillingStatus(str, Enum):
+    APPROVED = "APPROVED"
+    DECLINED = "DECLINED"
+    PENDING = "PENDING"
+
+
+class BillingBase(BaseModel):
+    amount: float = 0.0
+    status: BillingStatus = BillingStatus.PENDING
+
+
+class BillingRead(BillingBase):
+    id: int
+    appointment_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PatientBase(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None

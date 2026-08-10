@@ -16,6 +16,8 @@ from app.models import (
     Appointment,
     AppointmentStatus,
     AppointmentStatusHistory,
+    Billing,
+    BillingStatus,
     ContentChunk,
     Department,
     Patient,
@@ -349,6 +351,80 @@ def test_appointment_saga_endpoints_create_state_cancel_and_reschedule(client):
         refreshed_replacement_slot = db.query(Slot).filter(Slot.id == replacement_slot_id).one()
         assert refreshed_slot.status == SlotStatus.AVAILABLE
         assert refreshed_replacement_slot.status == SlotStatus.AVAILABLE
+    finally:
+        db.close()
+
+
+def test_billing_precheck_is_idempotent(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        patient_user = db.query(User).filter(User.email == "patient@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+
+        patient = Patient(user_id=patient_user.id)
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+
+        department = Department(name="Cardiology", description="Heart care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        service = Service(name="Checkup", department_id=department.id, is_published=True)
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 3, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        db.refresh(slot)
+
+        appointment = Appointment(
+            patient_id=patient.id,
+            provider_id=provider.id,
+            service_id=service.id,
+            slot_id=slot.id,
+            status=AppointmentStatus.PENDING,
+        )
+        db.add(appointment)
+        db.commit()
+        db.refresh(appointment)
+    finally:
+        db.close()
+
+    patient_token = _login(client, "patient@example.com", "secret123")
+    patient_headers = {"Authorization": f"Bearer {patient_token}"}
+
+    first = client.post(f"/api/v1/appointments/{appointment.id}/billing/pre-check", headers=patient_headers)
+    assert first.status_code == 200
+    assert first.json()["status"] == BillingStatus.APPROVED.value
+
+    second = client.post(f"/api/v1/appointments/{appointment.id}/billing/pre-check", headers=patient_headers)
+    assert second.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+
+    db = SessionLocal()
+    try:
+        records = db.query(Billing).filter(Billing.appointment_id == appointment.id).all()
+        assert len(records) == 1
     finally:
         db.close()
 

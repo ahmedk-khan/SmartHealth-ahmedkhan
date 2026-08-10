@@ -37,6 +37,7 @@ class Appointment(Base):
         cascade="all, delete-orphan",
         order_by="AppointmentStatusHistory.created_at",
     )
+    billing = relationship("Billing", back_populates="appointment", uselist=False, cascade="all, delete-orphan")
 
 
 class AppointmentStatusHistory(Base):

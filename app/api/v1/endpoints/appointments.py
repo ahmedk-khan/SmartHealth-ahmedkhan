@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import AppError
-from app.models import Appointment, AppointmentStatus, AppointmentStatusHistory, Patient, Slot, SlotStatus, User, UserRole
-from app.schemas.domain import AppointmentCreate, AppointmentRead, AppointmentStatusHistoryRead
+from app.models import Appointment, AppointmentStatus, AppointmentStatusHistory, Billing, BillingStatus, Patient, Slot, SlotStatus, User, UserRole
+from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
@@ -143,3 +143,27 @@ def reschedule_appointment(
     db.commit()
     db.refresh(appointment)
     return appointment
+
+
+@router.post("/{appointment_id}/billing/pre-check", response_model=BillingRead)
+def billing_pre_check(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    if not appointment:
+        raise ValueError("Appointment not found")
+
+    if current_user.role == UserRole.patient:
+        patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+        if not patient or appointment.patient_id != patient.id:
+            raise PermissionError("Forbidden")
+    elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+        raise PermissionError("Forbidden")
+
+    existing = db.query(Billing).filter(Billing.appointment_id == appointment.id).first()
+    if existing:
+        return existing
+
+    billing = Billing(appointment_id=appointment.id, amount=50.0, status=BillingStatus.APPROVED)
+    db.add(billing)
+    db.commit()
+    db.refresh(billing)
+    return billing

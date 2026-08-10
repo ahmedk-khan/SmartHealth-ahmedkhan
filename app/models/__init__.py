@@ -1,5 +1,6 @@
 from app.db import Base
 from app.models.appointment import Appointment, AppointmentStatus, AppointmentStatusHistory
+from app.models.billing import Billing, BillingStatus
 from app.models.content_chunk import ContentChunk
 from app.models.department import Department
 from app.models.patient import Patient
@@ -13,6 +14,8 @@ __all__ = [
     "Appointment",
     "AppointmentStatus",
     "AppointmentStatusHistory",
+    "Billing",
+    "BillingStatus",
     "Department",
     "Patient",
     "Provider",

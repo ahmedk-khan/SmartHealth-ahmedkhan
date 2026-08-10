@@ -114,8 +114,8 @@ class AppointmentBase(BaseModel):
     status: AppointmentStatus = AppointmentStatus.PENDING
 
 
-class AppointmentCreate(AppointmentBase):
-    pass
+class AppointmentCreate(BaseModel):
+    slot_id: int
 
 
 class AppointmentRead(AppointmentBase):

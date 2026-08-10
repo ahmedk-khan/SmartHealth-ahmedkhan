@@ -259,6 +259,100 @@ def test_appointment_and_status_history_are_created_for_slot(client):
         db.close()
 
 
+def test_appointment_saga_endpoints_create_state_cancel_and_reschedule(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        patient_user = db.query(User).filter(User.email == "patient@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+
+        patient = Patient(user_id=patient_user.id)
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+
+        department = Department(name="Cardiology", description="Heart care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        service = Service(name="Checkup", department_id=department.id, is_published=True)
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 2, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        db.refresh(slot)
+        slot_id = slot.id
+
+        replacement_slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 2, 10, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 2, 10, 30, tzinfo=timezone.utc),
+        )
+        db.add(replacement_slot)
+        db.commit()
+        db.refresh(replacement_slot)
+        replacement_slot_id = replacement_slot.id
+    finally:
+        db.close()
+
+    patient_token = _login(client, "patient@example.com", "secret123")
+    patient_headers = {"Authorization": f"Bearer {patient_token}"}
+
+    create_response = client.post(
+        "/api/v1/appointments",
+        json={"slot_id": slot_id},
+        headers=patient_headers,
+    )
+    assert create_response.status_code == 202
+    appointment_id = create_response.json()["id"]
+
+    state_response = client.get(f"/api/v1/appointments/{appointment_id}/state", headers=patient_headers)
+    assert state_response.status_code == 200
+    assert state_response.json()["status"] == "PENDING"
+
+    reschedule_response = client.post(
+        f"/api/v1/appointments/{appointment_id}/reschedule",
+        json={"slot_id": replacement_slot_id},
+        headers=patient_headers,
+    )
+    assert reschedule_response.status_code == 200
+    assert reschedule_response.json()["status"] == "PENDING"
+
+    cancel_response = client.post(f"/api/v1/appointments/{appointment_id}/cancel", headers=patient_headers)
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "CANCELLED"
+
+    db = SessionLocal()
+    try:
+        refreshed_slot = db.query(Slot).filter(Slot.id == slot_id).one()
+        refreshed_replacement_slot = db.query(Slot).filter(Slot.id == replacement_slot_id).one()
+        assert refreshed_slot.status == SlotStatus.AVAILABLE
+        assert refreshed_replacement_slot.status == SlotStatus.AVAILABLE
+    finally:
+        db.close()
+
+
 def test_duplicate_registration_is_rejected(client):
     first = _create_user(client, "dup@example.com", "secret123", "patient")
     assert first["email"] == "dup@example.com"

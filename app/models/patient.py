@@ -18,3 +18,4 @@ class Patient(Base):
 
     user = relationship("User", back_populates="patient", uselist=False)
     slots = relationship("Slot", back_populates="patient")
+    appointments = relationship("Appointment", back_populates="patient")

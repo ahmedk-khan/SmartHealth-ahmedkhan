@@ -98,6 +98,46 @@ class SlotRead(SlotBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AppointmentStatus(str, Enum):
+    PENDING = "PENDING"
+    CONFIRMED = "CONFIRMED"
+    CANCELLED = "CANCELLED"
+    COMPLETED = "COMPLETED"
+    NO_SHOW = "NO_SHOW"
+
+
+class AppointmentBase(BaseModel):
+    patient_id: int
+    provider_id: int
+    service_id: int
+    slot_id: int
+    status: AppointmentStatus = AppointmentStatus.PENDING
+
+
+class AppointmentCreate(AppointmentBase):
+    pass
+
+
+class AppointmentRead(AppointmentBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AppointmentStatusHistoryBase(BaseModel):
+    appointment_id: int
+    status: AppointmentStatus
+
+
+class AppointmentStatusHistoryRead(AppointmentStatusHistoryBase):
+    id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PatientBase(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None

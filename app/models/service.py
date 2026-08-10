@@ -43,6 +43,7 @@ class Service(Base):
     )
     slots = relationship("Slot", back_populates="service", cascade="all, delete-orphan")
     content_chunks = relationship("ContentChunk", back_populates="service", cascade="all, delete-orphan")
+    appointments = relationship("Appointment", back_populates="service")
 
     @hybrid_property
     def published(self):

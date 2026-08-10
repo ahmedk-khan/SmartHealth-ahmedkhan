@@ -12,7 +12,20 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 from app.core import dependencies
 from app.db import Base
 from app.main import app
-from app.models import ContentChunk, Department, Patient, Provider, Service, Slot, SlotStatus, User, UserRole
+from app.models import (
+    Appointment,
+    AppointmentStatus,
+    AppointmentStatusHistory,
+    ContentChunk,
+    Department,
+    Patient,
+    Provider,
+    Service,
+    Slot,
+    SlotStatus,
+    User,
+    UserRole,
+)
 
 
 @pytest.fixture()
@@ -169,6 +182,81 @@ def test_staff_can_create_and_list_services_with_public_filters(client):
     data = public_response.json()
     assert data["total"] >= 1
     assert data["items"][0]["name"] == "MRI Scan"
+
+
+def test_appointment_and_status_history_are_created_for_slot(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        patient_user = db.query(User).filter(User.email == "patient@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+
+        patient = Patient(user_id=patient_user.id)
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+
+        department = Department(name="Cardiology", description="Heart care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        service = Service(
+            name="Checkup",
+            description="Routine visit",
+            department_id=department.id,
+            is_published=True,
+        )
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 1, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        db.refresh(slot)
+
+        appointment = Appointment(
+            patient_id=patient.id,
+            provider_id=provider.id,
+            service_id=service.id,
+            slot_id=slot.id,
+            status=AppointmentStatus.PENDING,
+        )
+        db.add(appointment)
+        db.commit()
+        db.refresh(appointment)
+        appointment_id = appointment.id
+
+        history_entry = AppointmentStatusHistory(appointment_id=appointment_id, status=appointment.status)
+        db.add(history_entry)
+        db.commit()
+    finally:
+        db.close()
+
+    db = SessionLocal()
+    try:
+        stored = db.query(Appointment).filter(Appointment.id == appointment_id).one()
+        assert stored.status == AppointmentStatus.PENDING
+        assert len(stored.status_history) == 1
+        assert stored.status_history[0].status == AppointmentStatus.PENDING
+    finally:
+        db.close()
 
 
 def test_duplicate_registration_is_rejected(client):

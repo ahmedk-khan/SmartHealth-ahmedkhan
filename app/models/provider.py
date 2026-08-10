@@ -25,3 +25,4 @@ class Provider(Base):
         back_populates="providers",
     )
     slots = relationship("Slot", back_populates="provider", cascade="all, delete-orphan")
+    appointments = relationship("Appointment", back_populates="provider")

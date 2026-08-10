@@ -8,6 +8,7 @@ from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import AppError
 from app.models import Appointment, AppointmentStatus, AppointmentStatusHistory, Billing, BillingStatus, Patient, Slot, SlotStatus, User, UserRole
 from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead
+from app.workflows.appointment_saga import run_appointment_saga
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
@@ -27,23 +28,19 @@ def create_appointment(payload: AppointmentCreate, db: Session = Depends(get_db)
     if slot.status != SlotStatus.AVAILABLE:
         raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
 
-    now = datetime.datetime.now(datetime.timezone.utc)
-    slot.status = SlotStatus.RESERVED
-    slot.patient_id = patient.id
-    slot.updated_at = now
+    workflow_payload = {
+        "patient_id": patient.id,
+        "slot_id": slot.id,
+    }
+    workflow_result = run_appointment_saga(workflow_payload)
 
-    appointment = Appointment(
-        patient_id=patient.id,
-        provider_id=slot.provider_id,
-        service_id=slot.service_id,
-        slot_id=slot.id,
-        status=AppointmentStatus.PENDING,
-    )
-    db.add(appointment)
-    db.flush()
+    appointment = db.query(Appointment).filter(Appointment.id == workflow_result["appointment_id"]).first()
+    if not appointment:
+        raise ValueError("Appointment not found after saga execution")
 
-    history_entry = AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status)
-    db.add(history_entry)
+    db.refresh(appointment)
+    appointment.status = AppointmentStatus.PENDING
+    db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
     db.commit()
     db.refresh(appointment)
     return appointment

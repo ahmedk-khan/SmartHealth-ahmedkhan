@@ -1,11 +1,12 @@
 import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import AppError
+from app.core.idempotency import idempotency_store
 from app.models import Appointment, AppointmentStatus, AppointmentStatusHistory, Billing, BillingStatus, Patient, Slot, SlotStatus, User, UserRole
 from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead
 from app.workflows.appointment_saga import run_appointment_saga
@@ -14,9 +15,21 @@ router = APIRouter(prefix="/appointments", tags=["appointments"])
 
 
 @router.post("", response_model=AppointmentRead, status_code=status.HTTP_202_ACCEPTED)
-def create_appointment(payload: AppointmentCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def create_appointment(
+    payload: AppointmentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
     if current_user.role != UserRole.patient:
         raise PermissionError("Forbidden")
+
+    if idempotency_key:
+        cached = idempotency_store.get(current_user.id, idempotency_key)
+        if cached:
+            appointment = db.query(Appointment).filter(Appointment.id == cached["appointment_id"]).first()
+            if appointment:
+                return appointment
 
     patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
     if not patient:
@@ -43,6 +56,10 @@ def create_appointment(payload: AppointmentCreate, db: Session = Depends(get_db)
     db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
     db.commit()
     db.refresh(appointment)
+
+    if idempotency_key:
+        idempotency_store.set(current_user.id, idempotency_key, {"appointment_id": appointment.id})
+
     return appointment
 
 

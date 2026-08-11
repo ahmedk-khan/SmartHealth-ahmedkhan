@@ -88,7 +88,7 @@ class ServicePublishWorkflow:
         published = await workflow.execute_activity(
             validate_service,
             service_id,
-            start_to_close_timeout=workflow.Duration(seconds=30),
+            start_to_close_timeout=timedelta(seconds=30),
         )
         if published["status"] == ServiceStatus.PUBLISHED.value:
             self._status = ServiceStatus.PUBLISHED.value
@@ -97,7 +97,7 @@ class ServicePublishWorkflow:
         service_struct = await workflow.execute_activity(
             structure_service,
             published["service"],
-            start_to_close_timeout=workflow.Duration(seconds=30),
+            start_to_close_timeout=timedelta(seconds=30),
         )
         chunks = await workflow.execute_activity(
             chunk_service,

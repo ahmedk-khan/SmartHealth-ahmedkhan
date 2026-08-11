@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -7,12 +9,14 @@ from app.api import api_router
 from app.core.exceptions import AppError, format_app_error
 from app.db import init_db
 
-app = FastAPI(title="SmartHealth")
 
-
-@app.on_event("startup")
-def on_startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     init_db()
+    yield
+
+
+app = FastAPI(title="SmartHealth", lifespan=lifespan)
 
 
 @app.exception_handler(AppError)

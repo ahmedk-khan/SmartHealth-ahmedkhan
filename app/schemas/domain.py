@@ -106,16 +106,26 @@ class AppointmentStatus(str, Enum):
     NO_SHOW = "NO_SHOW"
 
 
+class VisitStatus(str, Enum):
+    NOT_STARTED = "NOT_STARTED"
+    CHECKED_IN = "CHECKED_IN"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+
+
 class AppointmentBase(BaseModel):
     patient_id: int
     provider_id: int
     service_id: int
     slot_id: int
     status: AppointmentStatus = AppointmentStatus.PENDING
+    visit_status: VisitStatus = VisitStatus.NOT_STARTED
 
 
 class AppointmentCreate(BaseModel):
     slot_id: int
+
+    model_config = ConfigDict(extra="allow")
 
 
 class AppointmentRead(AppointmentBase):

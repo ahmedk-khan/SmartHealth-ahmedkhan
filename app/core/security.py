@@ -1,5 +1,8 @@
 import datetime
+import warnings
 from typing import Any, Optional
+
+warnings.simplefilter("ignore", DeprecationWarning)
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext

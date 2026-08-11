@@ -23,6 +23,7 @@ from app.models import (
     Patient,
     Provider,
     Service,
+    ServiceStatus,
     Slot,
     SlotStatus,
     User,
@@ -421,6 +422,81 @@ def test_booking_is_idempotent_with_idempotency_key(client):
         db.close()
 
 
+def test_visit_lifecycle_transitions_are_idempotent(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        patient_user = db.query(User).filter(User.email == "patient@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+
+        patient = Patient(user_id=patient_user.id)
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+
+        department = Department(name="Cardiology", description="Heart care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        service = Service(name="Checkup", department_id=department.id, is_published=True)
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 5, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        db.refresh(slot)
+
+        appointment = Appointment(
+            patient_id=patient.id,
+            provider_id=provider.id,
+            service_id=service.id,
+            slot_id=slot.id,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        db.add(appointment)
+        db.commit()
+        db.refresh(appointment)
+    finally:
+        db.close()
+
+    patient_token = _login(client, "patient@example.com", "secret123")
+    patient_headers = {"Authorization": f"Bearer {patient_token}"}
+
+    first_checkin = client.post(f"/api/v1/appointments/{appointment.id}/visit/check-in", headers=patient_headers)
+    assert first_checkin.status_code == 200
+    assert first_checkin.json()["visit_status"] == "CHECKED_IN"
+
+    repeated_checkin = client.post(f"/api/v1/appointments/{appointment.id}/visit/check-in", headers=patient_headers)
+    assert repeated_checkin.status_code == 200
+    assert repeated_checkin.json()["visit_status"] == "CHECKED_IN"
+
+    start = client.post(f"/api/v1/appointments/{appointment.id}/visit/start", headers=patient_headers)
+    assert start.status_code == 200
+    assert start.json()["visit_status"] == "IN_PROGRESS"
+
+    complete = client.post(f"/api/v1/appointments/{appointment.id}/visit/complete", headers=patient_headers)
+    assert complete.status_code == 200
+    assert complete.json()["visit_status"] == "COMPLETED"
+
+
 def test_billing_precheck_is_idempotent(client):
     _create_user(client, "patient@example.com", "secret123", "patient")
     _create_user(client, "provider@example.com", "secret123", "provider")
@@ -493,6 +569,264 @@ def test_billing_precheck_is_idempotent(client):
         assert len(records) == 1
     finally:
         db.close()
+
+
+def test_slot_reservation_prevents_double_booking(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        patient_user = db.query(User).filter(User.email == "patient@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+
+        patient = Patient(user_id=patient_user.id)
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+
+        department = Department(name="Cardiology", description="Heart care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        service = Service(name="Checkup", department_id=department.id, is_published=True)
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 6, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 6, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        db.refresh(slot)
+    finally:
+        db.close()
+
+    patient_token = _login(client, "patient@example.com", "secret123")
+    headers = {"Authorization": f"Bearer {patient_token}"}
+
+    first = client.post(f"/api/v1/slots/{slot.id}/reserve", headers=headers)
+    assert first.status_code == 200
+
+    second = client.post(f"/api/v1/slots/{slot.id}/reserve", headers=headers)
+    assert second.status_code == 409
+
+
+def test_duplicate_booking_is_rejected(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        patient_user = db.query(User).filter(User.email == "patient@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+
+        patient = Patient(user_id=patient_user.id)
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+
+        department = Department(name="Cardiology", description="Heart care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        service = Service(name="Checkup", department_id=department.id, is_published=True)
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 7, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 7, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        db.refresh(slot)
+    finally:
+        db.close()
+
+    patient_token = _login(client, "patient@example.com", "secret123")
+    headers = {"Authorization": f"Bearer {patient_token}"}
+
+    first = client.post("/api/v1/appointments", json={"slot_id": slot.id}, headers=headers)
+    assert first.status_code == 202
+
+    second = client.post("/api/v1/appointments", json={"slot_id": slot.id}, headers=headers)
+    assert second.status_code == 409
+
+
+def test_saga_compensation_releases_slot_on_failure(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        patient_user = db.query(User).filter(User.email == "patient@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+
+        patient = Patient(user_id=patient_user.id)
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+
+        department = Department(name="Cardiology", description="Heart care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        service = Service(name="Checkup", department_id=department.id, is_published=True)
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 8, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 8, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        db.refresh(slot)
+    finally:
+        db.close()
+
+    patient_token = _login(client, "patient@example.com", "secret123")
+    headers = {"Authorization": f"Bearer {patient_token}"}
+
+    response = client.post(
+        "/api/v1/appointments",
+        json={"slot_id": slot.id, "force_failure": True},
+        headers=headers,
+    )
+    assert response.status_code == 500
+
+    db = SessionLocal()
+    try:
+        refreshed_slot = db.query(Slot).filter(Slot.id == slot.id).one()
+        assert refreshed_slot.status == SlotStatus.AVAILABLE
+    finally:
+        db.close()
+
+
+def test_service_publish_rejects_illegal_state_transitions(client):
+    _create_user(client, "admin@example.com", "secret123", "admin")
+    admin_token = _login(client, "admin@example.com", "secret123")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        department = Department(name="Neurology", description="Brain care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        service = Service(name="MRI", department_id=department.id, status=ServiceStatus.PUBLISHING, is_published=False)
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+        service_id = service.id
+    finally:
+        db.close()
+
+    publish_response = client.post(f"/api/v1/services/{service_id}/publish", headers=admin_headers)
+    assert publish_response.status_code == 409
+
+
+def test_visit_illegal_transition_is_rejected(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        patient_user = db.query(User).filter(User.email == "patient@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+
+        patient = Patient(user_id=patient_user.id)
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+
+        department = Department(name="Cardiology", description="Heart care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        service = Service(name="Checkup", department_id=department.id, is_published=True)
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 9, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 9, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        db.refresh(slot)
+
+        appointment = Appointment(
+            patient_id=patient.id,
+            provider_id=provider.id,
+            service_id=service.id,
+            slot_id=slot.id,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        db.add(appointment)
+        db.commit()
+        db.refresh(appointment)
+    finally:
+        db.close()
+
+    patient_token = _login(client, "patient@example.com", "secret123")
+    headers = {"Authorization": f"Bearer {patient_token}"}
+
+    response = client.post(f"/api/v1/appointments/{appointment.id}/visit/complete", headers=headers)
+    assert response.status_code == 409
 
 
 def test_duplicate_registration_is_rejected(client):

@@ -15,6 +15,13 @@ class AppointmentStatus(str, Enum):
     NO_SHOW = "NO_SHOW"
 
 
+class VisitStatus(str, Enum):
+    NOT_STARTED = "NOT_STARTED"
+    CHECKED_IN = "CHECKED_IN"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+
+
 class Appointment(Base):
     __tablename__ = "appointments"
 
@@ -24,6 +31,7 @@ class Appointment(Base):
     service_id = Column(Integer, ForeignKey("services.id"), nullable=False)
     slot_id = Column(Integer, ForeignKey("slots.id"), nullable=False, unique=True)
     status = Column(SAEnum(AppointmentStatus), nullable=False, default=AppointmentStatus.PENDING)
+    visit_status = Column(SAEnum(VisitStatus), nullable=False, default=VisitStatus.NOT_STARTED)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
 

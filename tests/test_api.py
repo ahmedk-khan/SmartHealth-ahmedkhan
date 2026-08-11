@@ -157,6 +157,11 @@ def test_patient_cannot_access_provider_schedule_or_other_patient_data(client):
     assert forbidden_patient_data.status_code == 403
 
 
+def test_list_providers_requires_authentication(client):
+    response = client.get("/api/v1/providers")
+    assert response.status_code == 401
+
+
 def test_staff_can_create_and_list_services_with_public_filters(client):
     _create_user(client, "admin@example.com", "secret123", "admin")
     _create_user(client, "patient@example.com", "secret123", "patient")

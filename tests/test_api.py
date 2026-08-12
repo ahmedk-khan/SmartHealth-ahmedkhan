@@ -90,6 +90,56 @@ def test_register_login_and_invalid_token(client):
     assert invalid.status_code == 401
 
 
+def test_patient_register_creates_profile_and_can_reserve_slot(client):
+    _create_user(client, "provider@example.com", "secret123", "provider")
+    _create_user(client, "patient2@example.com", "secret123", "patient")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        patient_user = db.query(User).filter(User.email == "patient2@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+
+        patient_profile = db.query(Patient).filter(Patient.user_id == patient_user.id).one_or_none()
+        assert patient_profile is not None
+
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+
+        department = Department(name="Dermatology", description="Skin care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        service = Service(name="Skin Check", department_id=department.id, is_published=True)
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 5, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        db.refresh(slot)
+        slot_id = slot.id
+    finally:
+        db.close()
+
+    patient_token = _login(client, "patient2@example.com", "secret123")
+    headers = {"Authorization": f"Bearer {patient_token}"}
+    reserve_response = client.post(f"/api/v1/slots/{slot_id}/reserve", headers=headers)
+    assert reserve_response.status_code == 200
+    assert reserve_response.json()["status"] == "RESERVED"
+
+
 def test_patient_cannot_access_provider_schedule_or_other_patient_data(client):
     admin = _create_user(client, "admin@example.com", "secret123", "admin")
     patient_user = _create_user(client, "patient@example.com", "secret123", "patient")

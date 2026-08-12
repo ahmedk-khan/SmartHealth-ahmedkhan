@@ -6,13 +6,14 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_db
 from app.core.exceptions import AppError
 from app.core.security import create_access_token, get_password_hash, verify_password
-from app.models import User
+from app.models import Patient, User, UserRole
 from app.schemas.user import Token, UserCreate, UserLogin, UserRead
 
 router = APIRouter(tags=["auth"])
 
 
 @router.post("/register", response_model=UserRead)
+
 def register(user_in: UserCreate, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == user_in.email).first()
     if existing:
@@ -23,6 +24,9 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
         role=user_in.role,
     )
     db.add(user)
+    db.flush()
+    if user.role == UserRole.patient:
+        db.add(Patient(user_id=user.id))
     db.commit()
     db.refresh(user)
     return UserRead.model_validate(user)

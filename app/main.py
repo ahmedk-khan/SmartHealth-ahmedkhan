@@ -1,13 +1,18 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.exceptions import HTTPException, RequestValidationError
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import Response
 
 from app.api import api_router
-from app.core.exceptions import AppError, format_app_error
+from app.core.exceptions import AppError, app_error_handler, generate_request_id, http_exception_handler, unexpected_exception_handler, validation_exception_handler
 from app.db import init_db
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -19,27 +24,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SmartHealth", lifespan=lifespan)
 
 
-@app.exception_handler(AppError)
-def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
-    return JSONResponse(status_code=exc.status_code, content=format_app_error(exc))
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next) -> Response:
+        request_id = request.headers.get("X-Request-ID") or generate_request_id()
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
 
-@app.exception_handler(RequestValidationError)
-def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    return JSONResponse(
-        status_code=422,
-        content={"error": {"type": "validation_error", "message": "Request validation failed", "detail": exc.errors()}},
-    )
+app.add_middleware(RequestIdMiddleware)
 
 
-@app.exception_handler(PermissionError)
-def permission_error_handler(request: Request, exc: PermissionError) -> JSONResponse:
-    return JSONResponse(status_code=403, content={"error": {"type": "forbidden", "message": str(exc), "detail": None}})
-
-
-@app.exception_handler(ValueError)
-def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
-    return JSONResponse(status_code=400, content={"error": {"type": "value_error", "message": str(exc), "detail": None}})
+app.exception_handler(AppError)(app_error_handler)
+app.exception_handler(RequestValidationError)(validation_exception_handler)
+app.exception_handler(HTTPException)(http_exception_handler)
+app.exception_handler(Exception)(unexpected_exception_handler)
 
 
 @app.get("/")

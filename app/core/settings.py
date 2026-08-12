@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     temporal_namespace: str = Field(default="default", alias="TEMPORAL_NAMESPACE")
     temporal_task_queue: str = Field(default="app-workflow", alias="TEMPORAL_TASK_QUEUE")
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
+    celery_broker_url: str = Field(default="redis://localhost:6379/1", alias="CELERY_BROKER_URL")
+    celery_result_backend: str = Field(default="redis://localhost:6379/2", alias="CELERY_RESULT_BACKEND")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

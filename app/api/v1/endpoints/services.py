@@ -26,7 +26,7 @@ class _LocalWorkflowHandle:
 
     async def query(self, query_name: str) -> str:
         if query_name != "publish_status":
-            raise ValueError("Unsupported query")
+            raise AppError("Unsupported query", status_code=400, error_type="invalid_query")
         return _LOCAL_PUBLISH_WORKFLOWS[self.workflow_id]["status"]
 
 
@@ -52,9 +52,9 @@ async def _start_local_publish_workflow(service_id: int, workflow_id: str) -> _L
 @router.post("", response_model=ServiceRead, status_code=status.HTTP_200_OK)
 def create_service(payload: ServiceCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
     if not db.query(Department).filter(Department.id == payload.department_id).first():
-        raise ValueError("Department not found")
+        raise AppError("Department not found", status_code=404, error_type="not_found")
     service_data = payload.model_dump()
     if service_data.get("is_published"):
         service_data["status"] = ServiceStatus.PUBLISHED
@@ -70,10 +70,10 @@ def create_service(payload: ServiceCreate, db: Session = Depends(get_db), curren
 @router.post("/{service_id}/publish", status_code=status.HTTP_202_ACCEPTED)
 async def publish_service(service_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
     service = db.query(Service).filter(Service.id == service_id).first()
     if not service:
-        raise ValueError("Service not found")
+        raise AppError("Service not found", status_code=404, error_type="not_found")
     if service.status == ServiceStatus.PUBLISHED:
         raise AppError("Service is already published", status_code=409, error_type="conflict")
     if service.status == ServiceStatus.PUBLISHING:
@@ -104,10 +104,10 @@ async def publish_service(service_id: int, db: Session = Depends(get_db), curren
 @router.post("/{service_id}/unpublish", status_code=status.HTTP_200_OK)
 def unpublish_service(service_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
     service = db.query(Service).filter(Service.id == service_id).first()
     if not service:
-        raise ValueError("Service not found")
+        raise AppError("Service not found", status_code=404, error_type="not_found")
     if service.status != ServiceStatus.PUBLISHED:
         raise AppError("Service is not published", status_code=409, error_type="conflict")
     service.status = ServiceStatus.UNPUBLISHED
@@ -122,7 +122,7 @@ def unpublish_service(service_id: int, db: Session = Depends(get_db), current_us
 async def publish_status(service_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     service = db.query(Service).filter(Service.id == service_id).first()
     if not service:
-        raise ValueError("Service not found")
+        raise AppError("Service not found", status_code=404, error_type="not_found")
     workflow_id = f"service-publish-{service.id}"
     try:
         client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)

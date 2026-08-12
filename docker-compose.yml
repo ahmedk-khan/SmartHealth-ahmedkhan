@@ -10,6 +10,19 @@ services:
     depends_on:
       - postgres
       - temporal
+      - redis
+
+  celery-worker:
+    build: .
+    command: celery -A app.celery_app worker --loglevel=info
+    volumes:
+      - ./app:/app/app
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+      - temporal
 
   postgres:
     image: postgres:16
@@ -35,6 +48,11 @@ services:
       - TEMPORAL_DB_PATH=/data/temporal.db
     volumes:
       - temporal-data:/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
 
 volumes:
   pgdata:

@@ -14,11 +14,11 @@ router = APIRouter(prefix="/slots", tags=["slots"])
 @router.post("", response_model=SlotRead, status_code=status.HTTP_200_OK)
 def create_slot(payload: SlotCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
     provider = db.query(Provider).filter(Provider.id == payload.provider_id).first()
     service = db.query(Service).filter(Service.id == payload.service_id).first()
     if not provider or not service:
-        raise ValueError("Provider or service not found")
+        raise AppError("Provider or service not found", status_code=404, error_type="not_found")
     slot = Slot(**payload.model_dump())
     db.add(slot)
     db.commit()
@@ -29,10 +29,10 @@ def create_slot(payload: SlotCreate, db: Session = Depends(get_db), current_user
 @router.post("/{slot_id}/reserve", response_model=SlotRead, status_code=status.HTTP_200_OK)
 def reserve_slot(slot_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role != UserRole.patient:
-        raise PermissionError("Forbidden")
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
     patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
     if not patient:
-        raise ValueError("Patient profile not found")
+        raise AppError("Patient profile not found", status_code=404, error_type="not_found")
 
     now = datetime.datetime.now(datetime.timezone.utc)
     updated = db.query(Slot).filter(Slot.id == slot_id, Slot.status == SlotStatus.AVAILABLE).update(

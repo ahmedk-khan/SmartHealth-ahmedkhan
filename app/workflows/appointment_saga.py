@@ -6,6 +6,7 @@ from temporalio import activity, workflow
 from sqlalchemy.orm import Session
 
 from app import db as db_module
+from app.core.exceptions import AppError
 from app.models import Appointment, AppointmentStatus, AppointmentStatusHistory, Billing, BillingStatus, Patient, Slot, SlotStatus
 
 
@@ -15,13 +16,13 @@ async def validate_appointment_data(appointment_data: dict[str, Any]) -> dict[st
     try:
         patient = db.query(Patient).filter(Patient.id == appointment_data["patient_id"]).first()
         if not patient:
-            raise ValueError("Patient not found")
+            raise AppError("Patient not found", status_code=404, error_type="not_found")
 
         slot = db.query(Slot).filter(Slot.id == appointment_data["slot_id"]).first()
         if not slot:
-            raise ValueError("Slot not found")
+            raise AppError("Slot not found", status_code=404, error_type="not_found")
         if slot.status != SlotStatus.AVAILABLE:
-            raise ValueError("Slot is no longer available")
+            raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
 
         return {"patient_id": patient.id, "slot_id": slot.id, "provider_id": slot.provider_id, "service_id": slot.service_id}
     finally:
@@ -34,9 +35,9 @@ async def reserve_slot(appointment_data: dict[str, Any]) -> dict[str, Any]:
     try:
         slot = db.query(Slot).filter(Slot.id == appointment_data["slot_id"]).first()
         if not slot:
-            raise ValueError("Slot not found")
+            raise AppError("Slot not found", status_code=404, error_type="not_found")
         if slot.status != SlotStatus.AVAILABLE:
-            raise ValueError("Slot is no longer available")
+            raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
 
         slot.status = SlotStatus.RESERVED
         slot.patient_id = appointment_data["patient_id"]
@@ -74,7 +75,7 @@ async def confirm_appointment(appointment_data: dict[str, Any]) -> dict[str, Any
     try:
         appointment = db.query(Appointment).filter(Appointment.id == appointment_data["appointment_id"]).first()
         if not appointment:
-            raise ValueError("Appointment not found")
+            raise AppError("Appointment not found", status_code=404, error_type="not_found")
         appointment.status = AppointmentStatus.CONFIRMED
         appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
         db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))

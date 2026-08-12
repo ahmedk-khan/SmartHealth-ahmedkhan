@@ -6,6 +6,7 @@ from temporalio import activity, workflow
 from sqlalchemy.orm import Session
 
 from app import db as db_module
+from app.core.exceptions import AppError
 from app.models import ContentChunk, Service, ServiceStatus
 
 
@@ -15,7 +16,7 @@ async def validate_service(service_id: int) -> dict[str, Any]:
     try:
         service = db.query(Service).filter(Service.id == service_id).first()
         if not service:
-            raise ValueError("Service not found")
+            raise AppError("Service not found", status_code=404, error_type="not_found")
         if service.status == ServiceStatus.PUBLISHED:
             return {"status": ServiceStatus.PUBLISHED.value, "service": None}
         service.status = ServiceStatus.PUBLISHING
@@ -62,7 +63,7 @@ async def mark_published(service_id: int, chunks: list[dict[str, Any]]) -> dict[
     try:
         service = db.query(Service).filter(Service.id == service_id).first()
         if not service:
-            raise ValueError("Service not found")
+            raise AppError("Service not found", status_code=404, error_type="not_found")
         service.status = ServiceStatus.PUBLISHED
         service.is_published = True
         db.add(service)

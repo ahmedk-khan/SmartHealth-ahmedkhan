@@ -98,6 +98,76 @@ class SlotRead(SlotBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AppointmentStatus(str, Enum):
+    PENDING = "PENDING"
+    CONFIRMED = "CONFIRMED"
+    CANCELLED = "CANCELLED"
+    COMPLETED = "COMPLETED"
+    NO_SHOW = "NO_SHOW"
+
+
+class VisitStatus(str, Enum):
+    NOT_STARTED = "NOT_STARTED"
+    CHECKED_IN = "CHECKED_IN"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+
+
+class AppointmentBase(BaseModel):
+    patient_id: int
+    provider_id: int
+    service_id: int
+    slot_id: int
+    status: AppointmentStatus = AppointmentStatus.PENDING
+    visit_status: VisitStatus = VisitStatus.NOT_STARTED
+
+
+class AppointmentCreate(BaseModel):
+    slot_id: int
+
+    model_config = ConfigDict(extra="allow")
+
+
+class AppointmentRead(AppointmentBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AppointmentStatusHistoryBase(BaseModel):
+    appointment_id: int
+    status: AppointmentStatus
+
+
+class AppointmentStatusHistoryRead(AppointmentStatusHistoryBase):
+    id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BillingStatus(str, Enum):
+    APPROVED = "APPROVED"
+    DECLINED = "DECLINED"
+    PENDING = "PENDING"
+
+
+class BillingBase(BaseModel):
+    amount: float = 0.0
+    status: BillingStatus = BillingStatus.PENDING
+
+
+class BillingRead(BillingBase):
+    id: int
+    appointment_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PatientBase(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None

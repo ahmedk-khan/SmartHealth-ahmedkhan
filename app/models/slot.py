@@ -30,3 +30,4 @@ class Slot(Base):
     provider = relationship("Provider", back_populates="slots")
     service = relationship("Service", back_populates="slots")
     patient = relationship("Patient", back_populates="slots")
+    appointment = relationship("Appointment", back_populates="slot", uselist=False)

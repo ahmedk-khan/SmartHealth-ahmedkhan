@@ -131,6 +131,48 @@ Role rules:
 - Reservations use an atomic conditional update on `slots.status`.
 - The reservation query only succeeds when the slot is still `AVAILABLE`.
 - This prevents double-booking by ensuring the DB applies the update only once.
+- The implementation uses a single `UPDATE ... WHERE id = ? AND status = 'AVAILABLE'` style operation so concurrent requests cannot both claim the same slot.
+
+## Workflow and saga diagrams
+
+### Service publish workflow
+
+```mermaid
+flowchart TD
+    A[Start publish] --> B[Validate service]
+    B --> C[Structure content]
+    C --> D[Chunk content]
+    D --> E[Mark service PUBLISHED and store chunks]
+    E --> F[Done]
+```
+
+### Appointment booking saga
+
+```mermaid
+flowchart TD
+    A[Create booking request] --> B[Validate slot and patient]
+    B --> C[Reserve slot]
+    C --> D[Create appointment record]
+    D --> E[Billing pre-check]
+    E --> F[Send reminder]
+    F --> G[Confirm appointment]
+    G --> H[Done]
+    D -->|failure| I[Release slot and fail]
+    E -->|failure| I
+    F -->|failure| I
+```
+
+## Concurrency and consistency choices
+
+- Slot reservation uses a conditional update so two concurrent requests cannot both claim the same slot.
+- Booking idempotency is keyed by the authenticated user and the `Idempotency-Key` header, which allows safe retries without creating duplicate appointments.
+- The appointment booking saga releases the reserved slot whenever a later step fails, preserving consistency between booking state and slot availability.
+
+## Key implementation decisions
+
+- The service publish flow is modeled as a workflow with distinct activities for validation, content structuring, chunking, and publication state changes.
+- The appointment booking flow is implemented as a saga-style workflow that can compensate for later failures.
+- The service and appointment state machines use explicit enums to restrict illegal transitions, and the API returns `409 Conflict` for invalid state moves.
 
 ## Notes
 

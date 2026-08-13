@@ -13,8 +13,13 @@ celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
-    imports=("app.tasks",),
+    imports=(
+        "app.workers.tasks.appointment_tasks",
+        "app.workers.tasks.analytics_tasks",
+    ),
     timezone="UTC",
     enable_utc=True,
     broker_connection_retry_on_startup=True,
+    task_always_eager=settings.celery_task_always_eager,
+    task_eager_propagates=True,
 )

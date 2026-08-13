@@ -1,16 +1,9 @@
 from celery.result import AsyncResult
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 
 from app.celery_app import celery_app
-from app.tasks import trivial_ping
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
-
-
-@router.post("/ping", status_code=202)
-def enqueue_ping(message: str = Query(default="pong")) -> dict[str, str]:
-    task = trivial_ping.delay(message)
-    return {"task_id": task.id, "state": task.state}
 
 
 @router.get("/{task_id}")
@@ -24,3 +17,4 @@ def get_task_status(task_id: str) -> dict[str, object]:
         else:
             response["result"] = str(payload)
     return response
+

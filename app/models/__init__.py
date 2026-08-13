@@ -3,6 +3,7 @@ from app.models.appointment import Appointment, AppointmentStatus, AppointmentSt
 from app.models.billing import Billing, BillingStatus
 from app.models.content_chunk import ContentChunk
 from app.models.department import Department
+from app.models.failed_job import FailedJob
 from app.models.patient import Patient
 from app.models.provider import Provider
 from app.models.service import Service, ServiceStatus, provider_services
@@ -18,6 +19,7 @@ __all__ = [
     "Billing",
     "BillingStatus",
     "Department",
+    "FailedJob",
     "Patient",
     "Provider",
     "Service",

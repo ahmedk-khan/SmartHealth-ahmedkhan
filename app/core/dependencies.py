@@ -32,8 +32,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 
 def require_role(*roles: str) -> Callable[[User], User]:
+    allowed = {role for role in roles}
+
     def dependency(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role.value not in roles:
+        if current_user.role.value not in allowed:
             raise AppError(
                 "Operation forbidden",
                 status_code=403,
@@ -42,3 +44,7 @@ def require_role(*roles: str) -> Callable[[User], User]:
         return current_user
 
     return dependency
+
+
+def require_roles(*roles: str) -> Callable[[User], User]:
+    return require_role(*roles)

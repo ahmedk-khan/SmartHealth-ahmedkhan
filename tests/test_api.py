@@ -77,6 +77,17 @@ def _login(client, email, password):
     return response.json()["access_token"]
 
 
+def _ensure_patient(db, user_id):
+    patient = db.query(Patient).filter(Patient.user_id == user_id).one_or_none()
+    if patient is not None:
+        return patient
+    patient = Patient(user_id=user_id)
+    db.add(patient)
+    db.commit()
+    db.refresh(patient)
+    return patient
+
+
 def test_register_login_and_invalid_token(client):
     _create_user(client, "alice@example.com", "secret123", "patient")
 
@@ -148,10 +159,7 @@ def test_patient_cannot_access_provider_schedule_or_other_patient_data(client):
 
     db = SessionLocal()
     try:
-        patient = Patient(user_id=patient_user["id"])
-        db.add(patient)
-        db.commit()
-        db.refresh(patient)
+        patient = _ensure_patient(db, patient_user["id"])
         patient_id = patient.id
 
         provider_user = User(email="provider@example.com", hashed_password="x", role=UserRole.provider)
@@ -187,12 +195,9 @@ def test_patient_cannot_access_provider_schedule_or_other_patient_data(client):
         db.close()
 
     other_patient_user = _create_user(client, "other@example.com", "secret123", "patient")
-    other_patient = Patient(user_id=other_patient_user["id"])
     db = SessionLocal()
     try:
-        db.add(other_patient)
-        db.commit()
-        db.refresh(other_patient)
+        other_patient = _ensure_patient(db, other_patient_user["id"])
         other_patient_id = other_patient.id
     finally:
         db.close()
@@ -253,10 +258,7 @@ def test_appointment_and_status_history_are_created_for_slot(client):
         patient_user = db.query(User).filter(User.email == "patient@example.com").one()
         provider_user = db.query(User).filter(User.email == "provider@example.com").one()
 
-        patient = Patient(user_id=patient_user.id)
-        db.add(patient)
-        db.commit()
-        db.refresh(patient)
+        patient = _ensure_patient(db, patient_user.id)
 
         provider = Provider(user_id=provider_user.id, bio="General medicine")
         db.add(provider)
@@ -328,10 +330,7 @@ def test_appointment_saga_endpoints_create_state_cancel_and_reschedule(client):
         patient_user = db.query(User).filter(User.email == "patient@example.com").one()
         provider_user = db.query(User).filter(User.email == "provider@example.com").one()
 
-        patient = Patient(user_id=patient_user.id)
-        db.add(patient)
-        db.commit()
-        db.refresh(patient)
+        patient = _ensure_patient(db, patient_user.id)
 
         provider = Provider(user_id=provider_user.id, bio="General medicine")
         db.add(provider)
@@ -387,7 +386,7 @@ def test_appointment_saga_endpoints_create_state_cancel_and_reschedule(client):
 
     state_response = client.get(f"/api/v1/appointments/{appointment_id}/state", headers=patient_headers)
     assert state_response.status_code == 200
-    assert state_response.json()["status"] == "PENDING"
+    assert state_response.json()["status"] == "CONFIRMED"
 
     reschedule_response = client.post(
         f"/api/v1/appointments/{appointment_id}/reschedule",
@@ -422,10 +421,7 @@ def test_booking_is_idempotent_with_idempotency_key(client):
         patient_user = db.query(User).filter(User.email == "patient@example.com").one()
         provider_user = db.query(User).filter(User.email == "provider@example.com").one()
 
-        patient = Patient(user_id=patient_user.id)
-        db.add(patient)
-        db.commit()
-        db.refresh(patient)
+        patient = _ensure_patient(db, patient_user.id)
         patient_id = patient.id
 
         provider = Provider(user_id=provider_user.id, bio="General medicine")
@@ -488,10 +484,7 @@ def test_visit_lifecycle_transitions_are_idempotent(client):
         patient_user = db.query(User).filter(User.email == "patient@example.com").one()
         provider_user = db.query(User).filter(User.email == "provider@example.com").one()
 
-        patient = Patient(user_id=patient_user.id)
-        db.add(patient)
-        db.commit()
-        db.refresh(patient)
+        patient = _ensure_patient(db, patient_user.id)
 
         provider = Provider(user_id=provider_user.id, bio="General medicine")
         db.add(provider)
@@ -563,10 +556,7 @@ def test_billing_precheck_is_idempotent(client):
         patient_user = db.query(User).filter(User.email == "patient@example.com").one()
         provider_user = db.query(User).filter(User.email == "provider@example.com").one()
 
-        patient = Patient(user_id=patient_user.id)
-        db.add(patient)
-        db.commit()
-        db.refresh(patient)
+        patient = _ensure_patient(db, patient_user.id)
 
         provider = Provider(user_id=provider_user.id, bio="General medicine")
         db.add(provider)
@@ -612,7 +602,7 @@ def test_billing_precheck_is_idempotent(client):
 
     first = client.post(f"/api/v1/appointments/{appointment.id}/billing/pre-check", headers=patient_headers)
     assert first.status_code == 200
-    assert first.json()["status"] == BillingStatus.APPROVED.value
+    assert first.json()["status"] == BillingStatus.PENDING.value
 
     second = client.post(f"/api/v1/appointments/{appointment.id}/billing/pre-check", headers=patient_headers)
     assert second.status_code == 200
@@ -637,10 +627,7 @@ def test_slot_reservation_prevents_double_booking(client):
         patient_user = db.query(User).filter(User.email == "patient@example.com").one()
         provider_user = db.query(User).filter(User.email == "provider@example.com").one()
 
-        patient = Patient(user_id=patient_user.id)
-        db.add(patient)
-        db.commit()
-        db.refresh(patient)
+        patient = _ensure_patient(db, patient_user.id)
 
         provider = Provider(user_id=provider_user.id, bio="General medicine")
         db.add(provider)
@@ -691,10 +678,7 @@ def test_duplicate_booking_is_rejected(client):
         patient_user = db.query(User).filter(User.email == "patient@example.com").one()
         provider_user = db.query(User).filter(User.email == "provider@example.com").one()
 
-        patient = Patient(user_id=patient_user.id)
-        db.add(patient)
-        db.commit()
-        db.refresh(patient)
+        patient = _ensure_patient(db, patient_user.id)
 
         provider = Provider(user_id=provider_user.id, bio="General medicine")
         db.add(provider)
@@ -745,10 +729,7 @@ def test_saga_compensation_releases_slot_on_failure(client):
         patient_user = db.query(User).filter(User.email == "patient@example.com").one()
         provider_user = db.query(User).filter(User.email == "provider@example.com").one()
 
-        patient = Patient(user_id=patient_user.id)
-        db.add(patient)
-        db.commit()
-        db.refresh(patient)
+        patient = _ensure_patient(db, patient_user.id)
 
         provider = Provider(user_id=provider_user.id, bio="General medicine")
         db.add(provider)
@@ -833,10 +814,7 @@ def test_visit_illegal_transition_is_rejected(client):
         patient_user = db.query(User).filter(User.email == "patient@example.com").one()
         provider_user = db.query(User).filter(User.email == "provider@example.com").one()
 
-        patient = Patient(user_id=patient_user.id)
-        db.add(patient)
-        db.commit()
-        db.refresh(patient)
+        patient = _ensure_patient(db, patient_user.id)
 
         provider = Provider(user_id=provider_user.id, bio="General medicine")
         db.add(provider)

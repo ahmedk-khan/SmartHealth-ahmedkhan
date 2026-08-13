@@ -1,0 +1,159 @@
+from typing import Optional
+
+from fastapi import Header
+
+from app.core.exceptions import AppError
+from app.core.idempotency import idempotency_store
+from app.models import AppointmentStatus, BillingStatus, User, UserRole, VisitStatus
+from app.repositories import AppointmentRepository, PatientRepository, SlotRepository
+from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead
+from app.services.base import BaseService
+from app.workflows.appointment_saga import run_appointment_saga
+
+
+class AppointmentService(BaseService):
+    def __init__(self, db):
+        super().__init__(db)
+        self.appointments = AppointmentRepository(db)
+        self.patients = PatientRepository(db)
+        self.slots = SlotRepository(db)
+
+    async def create(self, payload: AppointmentCreate, current_user: User, idempotency_key: Optional[str] = None):
+        if current_user.role != UserRole.patient:
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+
+        if idempotency_key:
+            cached = idempotency_store.get(current_user.id, idempotency_key)
+            if cached:
+                appointment = self.appointments.get_by_id(cached["appointment_id"])
+                if appointment:
+                    return appointment
+
+        patient = self.patients.get_by_user_id(current_user.id)
+        if not patient:
+            raise AppError("Patient profile not found", status_code=404, error_type="not_found")
+
+        slot = self.slots.get_by_id(payload.slot_id)
+        if not slot:
+            raise AppError("Slot not found", status_code=404, error_type="not_found")
+        if slot.status.value != "AVAILABLE":
+            raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
+
+        workflow_payload = {
+            "patient_id": patient.id,
+            "slot_id": slot.id,
+            **payload.model_dump(),
+        }
+        try:
+            workflow_result = await run_appointment_saga(workflow_payload)
+        except AppError:
+            raise
+        except Exception as exc:
+            raise AppError("Failed to create appointment", status_code=500, error_type="internal_error", detail=str(exc)) from exc
+
+        appointment = self.appointments.get_by_id(workflow_result["appointment_id"])
+        if not appointment:
+            raise AppError("Appointment not found after saga execution", status_code=404, error_type="not_found")
+
+        if idempotency_key:
+            idempotency_store.set(current_user.id, idempotency_key, {"appointment_id": appointment.id})
+
+        return appointment
+
+    def get_state(self, appointment_id: int, current_user: User) -> dict[str, str]:
+        appointment = self.appointments.get_by_id(appointment_id)
+        if not appointment:
+            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+
+        if current_user.role == UserRole.patient:
+            patient = self.patients.get_by_user_id(current_user.id)
+            if not patient or appointment.patient_id != patient.id:
+                raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+
+        return {"id": appointment.id, "status": appointment.status.value, "slot_id": appointment.slot_id}
+
+    def cancel(self, appointment_id: int, current_user: User):
+        appointment = self.appointments.get_by_id(appointment_id)
+        if not appointment:
+            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+
+        if current_user.role == UserRole.patient:
+            patient = self.patients.get_by_user_id(current_user.id)
+            if not patient or appointment.patient_id != patient.id:
+                raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+
+        if appointment.status.value in {AppointmentStatus.CANCELLED.value, AppointmentStatus.COMPLETED.value}:
+            raise AppError("Appointment is already in a terminal state", status_code=409, error_type="conflict")
+
+        return self.appointments.cancel(appointment)
+
+    def reschedule(self, appointment_id: int, slot_id: int, current_user: User):
+        appointment = self.appointments.get_by_id(appointment_id)
+        if not appointment:
+            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+
+        if current_user.role == UserRole.patient:
+            patient = self.patients.get_by_user_id(current_user.id)
+            if not patient or appointment.patient_id != patient.id:
+                raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+
+        if appointment.status.value in {AppointmentStatus.CANCELLED.value, AppointmentStatus.COMPLETED.value}:
+            raise AppError("Appointment is already in a terminal state", status_code=409, error_type="conflict")
+
+        new_slot = self.slots.get_by_id(slot_id)
+        if not new_slot:
+            raise AppError("Replacement slot not found", status_code=404, error_type="not_found")
+        if new_slot.status.value != "AVAILABLE":
+            raise AppError("Replacement slot is no longer available", status_code=409, error_type="conflict")
+
+        return self.appointments.reschedule(appointment, new_slot)
+
+    def transition_visit_status(self, appointment_id: int, target_status: VisitStatus, current_user: User):
+        appointment = self.appointments.get_by_id(appointment_id)
+        if not appointment:
+            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+        if current_user.role == UserRole.patient:
+            patient = self.patients.get_by_user_id(current_user.id)
+            if not patient or appointment.patient_id != patient.id:
+                raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+
+        if appointment.visit_status == target_status:
+            return {"appointment_id": appointment.id, "visit_status": appointment.visit_status.value}
+
+        if target_status == VisitStatus.CHECKED_IN:
+            if appointment.visit_status not in {VisitStatus.NOT_STARTED, VisitStatus.CHECKED_IN}:
+                raise AppError("Visit is already in a later state", status_code=409, error_type="conflict")
+        elif target_status == VisitStatus.IN_PROGRESS:
+            if appointment.visit_status not in {VisitStatus.CHECKED_IN, VisitStatus.IN_PROGRESS}:
+                raise AppError("Visit must be checked in before starting", status_code=409, error_type="conflict")
+        elif target_status == VisitStatus.COMPLETED:
+            if appointment.visit_status != VisitStatus.IN_PROGRESS:
+                raise AppError("Visit must be in progress before completion", status_code=409, error_type="conflict")
+
+        updated = self.appointments.transition_visit_status(appointment, target_status)
+        return {"appointment_id": updated.id, "visit_status": updated.visit_status.value}
+
+    def billing_pre_check(self, appointment_id: int, current_user: User):
+        appointment = self.appointments.get_by_id(appointment_id)
+        if not appointment:
+            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+
+        if current_user.role == UserRole.patient:
+            patient = self.patients.get_by_user_id(current_user.id)
+            if not patient or appointment.patient_id != patient.id:
+                raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+
+        existing = self.appointments.get_billing_by_appointment_id(appointment.id)
+        if existing:
+            return existing
+        return self.appointments.create_billing(appointment.id)

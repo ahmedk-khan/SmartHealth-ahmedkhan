@@ -1,4 +1,5 @@
 from app.db import Base
+from app.models.analytics import AnalyticsAppointmentDaily, AnalyticsProcessedEvent, AnalyticsServiceDaily
 from app.models.appointment import Appointment, AppointmentStatus, AppointmentStatusHistory, VisitStatus
 from app.models.billing import Billing, BillingStatus
 from app.models.content_chunk import ContentChunk
@@ -30,4 +31,7 @@ __all__ = [
     "ContentChunk",
     "User",
     "UserRole",
+    "AnalyticsProcessedEvent",
+    "AnalyticsAppointmentDaily",
+    "AnalyticsServiceDaily",
 ]

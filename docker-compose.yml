@@ -26,6 +26,17 @@ services:
       - temporal
       - kafka
 
+  analytics-consumer:
+    build: .
+    command: python -m app.workers.analytics_consumer
+    volumes:
+      - ./app:/app/app
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - kafka
+
   postgres:
     image: postgres:16
     environment:

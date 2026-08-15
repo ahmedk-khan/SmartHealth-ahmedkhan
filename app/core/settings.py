@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     celery_task_always_eager: bool = Field(default=False, alias="CELERY_TASK_ALWAYS_EAGER")
     kafka_enabled: bool = Field(default=False, alias="KAFKA_ENABLED")
     kafka_bootstrap_servers: str = Field(default="localhost:9092", alias="KAFKA_BOOTSTRAP_SERVERS")
+    kafka_consumer_group: str = Field(default="app-analytics", alias="KAFKA_CONSUMER_GROUP")
     kafka_topic_prefix: str = Field(default="app", alias="KAFKA_TOPIC_PREFIX")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     celery_broker_url: str = Field(default="redis://localhost:6379/1", alias="CELERY_BROKER_URL")
     celery_result_backend: str = Field(default="redis://localhost:6379/2", alias="CELERY_RESULT_BACKEND")
     celery_task_always_eager: bool = Field(default=False, alias="CELERY_TASK_ALWAYS_EAGER")
+    kafka_enabled: bool = Field(default=False, alias="KAFKA_ENABLED")
+    kafka_bootstrap_servers: str = Field(default="localhost:9092", alias="KAFKA_BOOTSTRAP_SERVERS")
+    kafka_topic_prefix: str = Field(default="app", alias="KAFKA_TOPIC_PREFIX")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

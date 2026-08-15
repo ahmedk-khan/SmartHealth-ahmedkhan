@@ -8,6 +8,7 @@ from app.models import AppointmentStatus, BillingStatus, User, UserRole, VisitSt
 from app.repositories import AppointmentRepository, PatientRepository, SlotRepository
 from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead
 from app.services.base import BaseService
+from app.services.healthcare_event_service import HealthcareEventService
 from app.workflows.appointment_saga import run_appointment_saga
 
 
@@ -17,6 +18,7 @@ class AppointmentService(BaseService):
         self.appointments = AppointmentRepository(db)
         self.patients = PatientRepository(db)
         self.slots = SlotRepository(db)
+        self.events = HealthcareEventService()
 
     async def create(self, payload: AppointmentCreate, current_user: User, idempotency_key: Optional[str] = None):
         if current_user.role != UserRole.patient:
@@ -57,6 +59,17 @@ class AppointmentService(BaseService):
 
         if idempotency_key:
             idempotency_store.set(current_user.id, idempotency_key, {"appointment_id": appointment.id})
+
+        self.events.publish_appointment_event(
+            "appointment.created",
+            appointment_id=appointment.id,
+            patient_id=patient.id,
+            provider_id=appointment.provider_id,
+            service_id=appointment.service_id,
+            slot_id=appointment.slot_id,
+            status=appointment.status.value,
+            request_id=getattr(self, "request_id", None),
+        )
 
         return appointment
 
@@ -139,6 +152,17 @@ class AppointmentService(BaseService):
                 raise AppError("Visit must be in progress before completion", status_code=409, error_type="conflict")
 
         updated = self.appointments.transition_visit_status(appointment, target_status)
+        self.events.publish_appointment_event(
+            "appointment.visit_status_changed",
+            appointment_id=updated.id,
+            patient_id=appointment.patient_id,
+            provider_id=appointment.provider_id,
+            service_id=appointment.service_id,
+            slot_id=updated.slot_id,
+            status=updated.status.value,
+            visit_status=updated.visit_status.value,
+            request_id=getattr(self, "request_id", None),
+        )
         return {"appointment_id": updated.id, "visit_status": updated.visit_status.value}
 
     def billing_pre_check(self, appointment_id: int, current_user: User):

@@ -167,7 +167,19 @@ class AnalyticsConsumer:
 
         db = SessionLocal()
         try:
-            self._store_processed(db, str(event_id), str(message.get("event_type", "unknown")), topic, message)
+            processed = AnalyticsProcessedEvent(
+                event_id=str(event_id),
+                event_type=str(message.get("event_type", "unknown")),
+                topic=topic,
+                payload=message,
+            )
+            db.add(processed)
+            try:
+                db.flush()
+            except Exception:
+                db.rollback()
+                return
+
             if "appointment" in topic:
                 self._update_appointment_metrics(db, message)
             elif "service" in topic:

@@ -616,6 +616,43 @@ def test_billing_precheck_is_idempotent(client):
         db.close()
 
 
+def test_analytics_consumer_deduplicates_replayed_visit_completed_event(client):
+    from app.db import SessionLocal
+    from app.models import AnalyticsAppointmentDaily, AnalyticsProcessedEvent
+    from app.workers.analytics_consumer import AnalyticsConsumer
+
+    consumer = AnalyticsConsumer()
+    payload = {
+        "event_id": "evt-visit-completed-001",
+        "event_type": "visit.completed",
+        "occurred_at": "2026-08-15T10:00:00Z",
+        "source": "smarthealth-api",
+        "entity_type": "appointment",
+        "entity_id": "42",
+        "appointment_id": 42,
+        "patient_id": 7,
+        "provider_id": 9,
+        "service_id": 12,
+        "slot_id": 18,
+        "visit_status": "COMPLETED",
+        "status": "CONFIRMED",
+    }
+
+    consumer.process_message(payload, "app.appointment.visit_status_changed")
+    consumer.process_message(payload, "app.appointment.visit_status_changed")
+
+    db = SessionLocal()
+    try:
+        processed_count = db.query(AnalyticsProcessedEvent).filter(AnalyticsProcessedEvent.event_id == payload["event_id"]).count()
+        completed_rows = db.query(AnalyticsAppointmentDaily).filter(
+            AnalyticsAppointmentDaily.event_type == "visit.completed",
+        ).count()
+        assert processed_count == 1
+        assert completed_rows == 1
+    finally:
+        db.close()
+
+
 def test_slot_reservation_prevents_double_booking(client):
     _create_user(client, "patient@example.com", "secret123", "patient")
     _create_user(client, "provider@example.com", "secret123", "provider")

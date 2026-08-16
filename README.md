@@ -1,176 +1,245 @@
 # SmartHealth
 
-SmartHealth is a FastAPI-based healthcare scheduling platform with:
+SmartHealth is a healthcare scheduling and operations platform built with FastAPI. It enables patient booking workflows, provider/service management, department organization, appointment lifecycle tracking, and operational observability in a single backend system.
 
-- email/password authentication
-- role-based access control for patients, providers, front-desk staff, and admins
-- department and provider onboarding
-- service publishing and public discovery
-- slot management, booking, and appointment workflows
-- billing pre-checks and visit lifecycle tracking
+## Overview
 
-## What’s included in Week 2
+The platform includes:
 
-The current implementation includes:
+- secure authentication and role-based authorization
+- patient, provider, department, and service management
+- slot publishing and reservation workflows
+- appointment creation, rescheduling, cancellation, and visit tracking
+- billing pre-check support
+- asynchronous workflow processing through Temporal and Celery
+- structured logging, correlation IDs, and Prometheus metrics
 
-- service status handling with publish/unpublish validation and conflict responses
-- service publishing via a Temporal-oriented workflow with activities that validate, structure, chunk, and mark services as published
-- publish status querying through `POST /services/{id}/publish` and `GET /services/{id}/publish-status`
-- slot reservation using an atomic conditional update to prevent double-booking
-- appointment domain models, status history, and billing records
-- booking idempotency using the `Idempotency-Key` header with Redis-backed storage
-- appointment saga-style flow for booking, billing, reminders, and confirmation with compensation on failure
-- visit lifecycle transitions for `CHECKED_IN`, `IN_PROGRESS`, and `COMPLETED`
+## Core capabilities
+
+- patient onboarding and authentication flows
+- provider and department configuration
+- service catalog publishing and status tracking
+- slot-based scheduling and availability checks
+- appointment booking with idempotency protection
+- audit-friendly observability across HTTP, worker, and workflow boundaries
+
+## Architecture summary
+
+SmartHealth is organized into a modular FastAPI service with clear domain boundaries:
+
+- API layer: request handling, routing, auth, and public endpoints
+- service layer: business logic and workflow orchestration
+- repository layer: persistence and data access
+- schema layer: request/response validation with Pydantic
+- workflow layer: Temporal-oriented orchestration for complex flows
+- background workers: Celery task execution and integrations
+- observability layer: structured logging, correlation IDs, and metrics
+
+```mermaid
+flowchart LR
+    Client --> API[FastAPI Application]
+    API --> DB[(PostgreSQL)]
+    API --> Redis[(Redis)]
+    API --> Kafka[(Kafka)]
+    API --> Temporal[Temporal Workflows]
+    API --> Celery[Celery Workers]
+    Celery --> DB
+    Celery --> Kafka
+    Temporal --> DB
+    API --> Metrics[Prometheus /metrics]
+```
+
+## Technology stack
+
+- FastAPI for HTTP APIs and Swagger/OpenAPI documentation
+- SQLAlchemy for ORM/data access
+- PostgreSQL for persistent application data
+- Redis for idempotency and shared operational state
+- Celery for background workers and async execution
+- Kafka for event-driven integration patterns
+- Temporal for workflow orchestration and saga-style flows
+- Prometheus + prometheus-client for metrics and scraping
+- Alembic for database versioning and migration management
 
 ## Quick start
 
-1. Copy the environment file:
-   ```bash
-   copy .env.example .env
-   ```
-2. Start the supporting services with Docker Compose:
-   ```bash
-   docker compose up -d postgres temporal
-   ```
-3. Install Python dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Apply the database schema (Alembic is configured):
-   ```bash
-   alembic upgrade head
-   ```
-5. Start the FastAPI app:
-   ```bash
-   uvicorn app.main:app --reload
-   ```
-6. Start the Temporal worker for workflow execution:
-   ```bash
-   python -m app.workers.service_publish_worker
-   ```
+### 1. Configure environment
+
+Copy the example environment file and update values as needed:
+
+```bash
+copy .env.example .env
+```
+
+### 2. Start supporting infrastructure
+
+```bash
+docker compose up -d
+```
+
+This brings up the main dependencies required by the platform:
+
+- PostgreSQL
+- Redis
+- Kafka
+- Temporal
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Apply database migrations
+
+```bash
+alembic upgrade head
+```
+
+### 5. Start the API service
+
+```bash
+uvicorn app.main:app --reload
+```
+
+### 6. Start background workers
+
+```bash
+celery -A app.celery_app worker --loglevel=info
+```
+
+### 7. Start Temporal workflow worker if required
+
+```bash
+python -m app.workers.service_publish_worker
+```
 
 ## API overview
 
-### Auth
+### Authentication
 
 - `POST /auth/register`
-  - body: `email`, `password`, `role`
-  - roles: `patient`, `provider`, `front_desk`, `admin`
+  - creates a user account
+  - supported roles: `patient`, `provider`, `front_desk`, `admin`
 
 - `POST /auth/login`
-  - body: `email`, `password`
+  - validates credentials
   - returns an access token
 
-### Health
+### Health and monitoring
 
 - `GET /health`
-  - returns service status
+  - liveness check for the API
 
-### Departments
+- `GET /metrics`
+  - Prometheus-formatted metrics endpoint
+
+- `GET /docs`
+  - Swagger UI for API inspection and manual testing
+
+### Core domain APIs
+
+#### Departments
 
 - `POST /api/v1/departments`
-  - roles: `admin`, `front_desk`
-  - body: `name`, optional `description`
-
 - `GET /api/v1/departments`
-  - requires authentication
 
-### Providers
+#### Providers
 
 - `POST /api/v1/providers`
-  - roles: `provider`, `admin`, `front_desk`
-  - body: `bio`, `department_id`
-  - links the provider record to the authenticated user
-
 - `GET /api/v1/providers`
-  - requires authentication
-
 - `GET /api/v1/providers/{provider_id}/slots`
-  - returns the provider’s slot schedule
 
-### Services
+#### Services
 
 - `POST /api/v1/services`
-  - roles: `provider`, `admin`, `front_desk`
-  - body: `name`, `description`, `department_id`, `is_published`
-
 - `POST /api/v1/services/{service_id}/publish`
-  - roles: `provider`, `admin`, `front_desk`
-  - starts the publish workflow and returns `202 Accepted` with `workflow_id`
-
+- `POST /api/v1/services/{service_id}/unpublish`
 - `GET /api/v1/services/{service_id}/publish-status`
-  - returns the current workflow status
-
 - `GET /api/v1/services`
-  - returns published services only
 
-### Slots
+#### Slots
 
 - `POST /api/v1/slots`
-  - roles: `provider`, `admin`, `front_desk`
-  - body: `provider_id`, `service_id`, `status`, `start_datetime`, `end_datetime`
-
 - `POST /api/v1/slots/{slot_id}/reserve`
-  - roles: `patient`
-  - atomically reserves an available slot
-
 - `GET /api/v1/slots`
-  - patients see only currently available slots
 
-### Appointments
+#### Appointments
 
 - `POST /api/v1/appointments`
-  - roles: `patient`
-  - body: `slot_id`
-  - supports `Idempotency-Key` for duplicate-safe booking requests
-
 - `GET /api/v1/appointments/{appointment_id}/state`
-  - returns the appointment status and slot reference
-
 - `POST /api/v1/appointments/{appointment_id}/cancel`
-  - cancels the appointment and releases the slot
-
 - `POST /api/v1/appointments/{appointment_id}/reschedule`
-  - moves the appointment to a different slot
-
 - `POST /api/v1/appointments/{appointment_id}/billing/pre-check`
-  - creates or returns the billing pre-check record
-
 - `POST /api/v1/appointments/{appointment_id}/visit/check-in`
 - `POST /api/v1/appointments/{appointment_id}/visit/start`
 - `POST /api/v1/appointments/{appointment_id}/visit/complete`
-  - manage the visit lifecycle in an idempotent way
 
-### Public
+#### Public catalog
 
 - `GET /api/v1/public/services`
-  - query params: `search`, `department_id`, `limit`, `offset`
-  - returns published services without authentication
+  - public listing of published services
+
+## Operational patterns
+
+### Role-based access control
+
+Access is enforced by roles to keep the system secure and operationally consistent:
+
+- patient: booking and personal profile access
+- provider: provider profile, slot, and service access
+- front_desk: operational catalogue and support workflows
+- admin: full administrative control
+
+### Idempotency
+
+The appointment flow uses the `Idempotency-Key` header to safely prevent duplicate booking requests from creating duplicate records.
+
+### Workflow orchestration
+
+The service publishing and appointment workflows are designed to handle complex multi-step flows with compensation and state tracking.
+
+### Observability
+
+The platform includes:
+
+- structured JSON logs
+- correlation IDs across HTTP, Celery, and workflow boundaries
+- Prometheus metrics endpoint and counters
+- task execution monitoring
 
 ## Seed data
 
-Use the seeding helper to populate sample users and data:
+Use the application seed script to populate sample records for local development:
 
 ```bash
 docker compose run --rm api python -m app.seed
 ```
 
-Seeded accounts include:
+Sample accounts include:
 
-- `admin@example.com` / `secret123`
-- `provider@example.com` / `secret123`
-- `patient@example.com` / `secret123`
+- admin@example.com / secret123
+- provider@example.com / secret123
+- patient@example.com / secret123
 
 ## Testing
 
-Run the API test suite with:
+Run the test suite with:
 
 ```bash
 pytest -q
 ```
 
+## Documentation index
+
+- [docs/design.md](docs/design.md) — system design and domain model overview
+- [docs/STRUCTURED_LOGGING.md](docs/STRUCTURED_LOGGING.md) — structured logging and correlation tracing
+- [docs/events.md](docs/events.md) — event contracts and integration patterns
+- [docs/runbook.md](docs/runbook.md) — operational start-up and incident response guidance
+
 ## Notes
 
-- The app uses `.env` for database, JWT, Redis, and Temporal configuration.
-- The API mounts auth routes under `/auth` and versioned business routes under `/api/v1`.
-- The provider creation endpoint uses the current authenticated user rather than a user-supplied `user_id`.
+- configuration is managed through environment variables and `.env`
+- authenticated API routes are versioned under `/api/v1`
+- public catalog endpoints are intentionally separated from authenticated operational routes
+- the API and service layers are designed to remain testable, traceable, and maintainable in an enterprise environment

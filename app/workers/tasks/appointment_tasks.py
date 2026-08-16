@@ -1,9 +1,11 @@
 import logging
+import time
 import traceback
 
 from app.celery_app import celery_app
 from app.core.exceptions import AppError
 from app.core.logging import get_correlation_id, get_request_id
+from app.core.metrics import record_celery_task
 from app.db import SessionLocal
 from app.services.failed_job_service import FailedJobService
 from app.services.notification_service import NotificationService
@@ -35,6 +37,7 @@ def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
     """
     correlation_id = get_correlation_id()
     request_id = get_request_id()
+    task_start_time = time.time()
     
     logger.info(
         "Starting appointment reminder task",
@@ -48,9 +51,11 @@ def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
     )
     
     db = SessionLocal()
+    task_success = False
     try:
         service = NotificationService(db)
         result = service.send_appointment_reminder(appointment_id)
+        task_success = True
         
         logger.info(
             "Appointment reminder sent successfully",
@@ -117,6 +122,18 @@ def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
         raise
     finally:
         db.close()
+        
+        # Record task metrics
+        try:
+            task_duration = time.time() - task_start_time
+            record_celery_task(
+                task_name="send_appointment_reminder",
+                success=task_success,
+                duration_seconds=task_duration
+            )
+        except Exception as exc:
+            logger.error(f"Failed to record Celery task metric: {exc}", exc_info=True)
+        
         logger.info(
             "Appointment reminder task completed",
             extra={

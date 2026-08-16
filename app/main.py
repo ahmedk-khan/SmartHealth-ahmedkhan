@@ -8,8 +8,10 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.api import api_router
+from app.api.metrics_endpoint import create_metrics_endpoint
 from app.core.exceptions import AppError, app_error_handler, generate_request_id, http_exception_handler, unexpected_exception_handler, validation_exception_handler
 from app.core.logging import set_correlation_id, set_request_id, reset_correlation_id, reset_request_id, get_correlation_id, configure_logging
+from app.core.http_metrics_middleware import HTTPMetricsMiddleware
 from app.db import init_db
 
 
@@ -60,6 +62,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(HTTPMetricsMiddleware)
 
 
 app.exception_handler(AppError)(app_error_handler)
@@ -71,6 +74,13 @@ app.exception_handler(Exception)(unexpected_exception_handler)
 @app.get("/")
 def root():
     return {"message": "app api is running"}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint."""
+    metrics_handler = create_metrics_endpoint()
+    return await metrics_handler()
 
 
 app.include_router(api_router)

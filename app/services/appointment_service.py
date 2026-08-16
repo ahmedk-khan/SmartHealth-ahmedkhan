@@ -1,9 +1,16 @@
 from typing import Optional
+import time
 
 from fastapi import Header
 
 from app.core.exceptions import AppError
 from app.core.idempotency import idempotency_store
+from app.core.metrics import (
+    record_appointment_created,
+    record_appointment_cancelled,
+    record_visit_status_transition,
+    record_appointment_booking_time,
+)
 from app.models import AppointmentStatus, BillingStatus, User, UserRole, VisitStatus
 from app.repositories import AppointmentRepository, PatientRepository, SlotRepository
 from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead
@@ -25,6 +32,7 @@ class AppointmentService(BaseService):
     async def create(self, payload: AppointmentCreate, current_user: User, idempotency_key: Optional[str] = None):
         """Create a new appointment with saga workflow."""
         self.log_info("Appointment creation request", operation="create_appointment", data={"user_id": current_user.id})
+        booking_start_time = time.time()
         
         if current_user.role != UserRole.patient:
             self.log_warning("Appointment creation denied: invalid role", operation="create_appointment", data={"role": current_user.role})
@@ -76,6 +84,14 @@ class AppointmentService(BaseService):
             idempotency_store.set(current_user.id, idempotency_key, {"appointment_id": appointment.id})
 
         self.log_info("Appointment created successfully", operation="create_appointment", data={"appointment_id": appointment.id})
+        
+        # Record metrics
+        try:
+            record_appointment_created()
+            booking_duration = time.time() - booking_start_time
+            record_appointment_booking_time(booking_duration)
+        except Exception as exc:
+            self.log_error("Failed to record appointment creation metrics", operation="create_appointment", data={"error": str(exc)})
         
         self.events.publish_appointment_event(
             "appointment.created",
@@ -131,6 +147,13 @@ class AppointmentService(BaseService):
             raise AppError("Appointment is already in a terminal state", status_code=409, error_type="conflict")
 
         self.log_info("Appointment cancelled", operation="cancel_appointment", data={"appointment_id": appointment_id})
+        
+        # Record metrics
+        try:
+            record_appointment_cancelled()
+        except Exception as exc:
+            self.log_error("Failed to record cancellation metric", operation="cancel_appointment", data={"error": str(exc)})
+        
         return self.appointments.cancel(appointment)
 
     def reschedule(self, appointment_id: int, slot_id: int, current_user: User):
@@ -192,6 +215,12 @@ class AppointmentService(BaseService):
         updated = self.appointments.transition_visit_status(appointment, target_status)
         
         self.log_info("Visit status transitioned", operation="transition_visit_status", data={"appointment_id": updated.id, "visit_status": updated.visit_status.value})
+        
+        # Record metrics
+        try:
+            record_visit_status_transition(from_status=appointment.visit_status.value, to_status=target_status.value)
+        except Exception as exc:
+            self.log_error("Failed to record visit status transition metric", operation="transition_visit_status", data={"error": str(exc)})
         
         self.events.publish_appointment_event(
             "appointment.visit_status_changed",

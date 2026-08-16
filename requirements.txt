@@ -16,3 +16,4 @@ httpx==0.28.1
 ruff==0.8.4
 black==24.10.0
 redis==5.1.1
+prometheus-client==0.21.0

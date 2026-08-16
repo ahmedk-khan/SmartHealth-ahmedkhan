@@ -1,10 +1,15 @@
+import logging
 import traceback
 
 from app.celery_app import celery_app
 from app.core.exceptions import AppError
+from app.core.logging import get_correlation_id, get_request_id
 from app.db import SessionLocal
 from app.services.failed_job_service import FailedJobService
 from app.services.notification_service import NotificationService
+
+
+logger = logging.getLogger(__name__)
 
 
 @celery_app.task(
@@ -16,11 +21,59 @@ from app.services.notification_service import NotificationService
     max_retries=3,
 )
 def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
+    """
+    Send an appointment reminder notification.
+    
+    This task is executed asynchronously via Celery, with automatic
+    correlation ID propagation from task headers.
+    
+    Args:
+        appointment_id: ID of the appointment to send reminder for
+    
+    Returns:
+        Dictionary with task result
+    """
+    correlation_id = get_correlation_id()
+    request_id = get_request_id()
+    
+    logger.info(
+        "Starting appointment reminder task",
+        extra={
+            "task_id": self.request.id,
+            "task_name": self.name,
+            "appointment_id": appointment_id,
+            "correlation_id": correlation_id,
+            "request_id": request_id,
+        }
+    )
+    
     db = SessionLocal()
     try:
         service = NotificationService(db)
-        return service.send_appointment_reminder(appointment_id)
+        result = service.send_appointment_reminder(appointment_id)
+        
+        logger.info(
+            "Appointment reminder sent successfully",
+            extra={
+                "task_id": self.request.id,
+                "appointment_id": appointment_id,
+                "correlation_id": correlation_id,
+            }
+        )
+        
+        return result
     except AppError as exc:
+        logger.error(
+            "Appointment reminder task failed with AppError",
+            extra={
+                "task_id": self.request.id,
+                "appointment_id": appointment_id,
+                "correlation_id": correlation_id,
+                "error": str(exc),
+            },
+            exc_info=True
+        )
+        
         failed_service = FailedJobService(db)
         failed_service.record_failure(
             task_name=self.name,
@@ -31,6 +84,17 @@ def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
         )
         raise
     except Exception as exc:
+        logger.error(
+            "Appointment reminder task failed with exception",
+            extra={
+                "task_id": self.request.id,
+                "appointment_id": appointment_id,
+                "correlation_id": correlation_id,
+                "error": str(exc),
+            },
+            exc_info=True
+        )
+        
         failed_service = FailedJobService(db)
         failed_service.record_failure(
             task_name=self.name,
@@ -39,8 +103,25 @@ def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
             payload={"appointment_id": appointment_id},
             traceback_text=traceback.format_exc(),
         )
+        
         if isinstance(exc, (ConnectionError, TimeoutError)):
+            logger.info(
+                "Retrying appointment reminder task",
+                extra={
+                    "task_id": self.request.id,
+                    "appointment_id": appointment_id,
+                    "retry_count": self.request.retries,
+                }
+            )
             raise self.retry(exc=exc, countdown=30)
         raise
     finally:
         db.close()
+        logger.info(
+            "Appointment reminder task completed",
+            extra={
+                "task_id": self.request.id,
+                "appointment_id": appointment_id,
+                "correlation_id": correlation_id,
+            }
+        )

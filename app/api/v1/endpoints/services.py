@@ -48,31 +48,56 @@ async def _start_local_publish_workflow(service_id: int, workflow_id: str) -> _L
         raise
 
 
-@router.post("", response_model=ServiceRead, status_code=status.HTTP_200_OK)
+@router.post(
+    "",
+    response_model=ServiceRead,
+    status_code=status.HTTP_200_OK,
+    summary="Create service",
+    description="Creates a healthcare service definition for provider and departmental catalog usage.",
+)
 def create_service(payload: ServiceCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     service = ServiceManagementService(db)
     return service.create_service(payload, current_user)
 
 
-@router.post("/{service_id}/publish", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/{service_id}/publish",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Publish service",
+    description="Publishes a service to the public catalog and starts the service publication workflow.",
+)
 async def publish_service(service_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     service = ServiceManagementService(db)
     return await service.publish_service(service_id, current_user)
 
 
-@router.post("/{service_id}/unpublish", status_code=status.HTTP_200_OK)
+@router.post(
+    "/{service_id}/unpublish",
+    status_code=status.HTTP_200_OK,
+    summary="Unpublish service",
+    description="Removes a service from the public-facing catalog while preserving the underlying record.",
+)
 def unpublish_service(service_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     service = ServiceManagementService(db)
     return service.unpublish_service(service_id, current_user)
 
 
-@router.get("/{service_id}/publish-status")
+@router.get(
+    "/{service_id}/publish-status",
+    summary="Get publish status",
+    description="Checks the current state of a service publication workflow and returns the latest status.",
+)
 async def publish_status(service_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     service = ServiceManagementService(db)
     return await service.publish_status(service_id, current_user)
 
 
-@router.get("", response_model=PaginatedResponse[ServiceRead])
+@router.get(
+    "",
+    response_model=PaginatedResponse[ServiceRead],
+    summary="List services",
+    description="Returns a paginated list of available services for operational and customer-facing use.",
+)
 def list_services(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     service = ServiceManagementService(db)
     items, total = service.repository.list_published(offset=offset, limit=limit)

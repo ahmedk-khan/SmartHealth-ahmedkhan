@@ -10,7 +10,13 @@ from app.schemas.domain import DepartmentCreate, DepartmentRead, PaginatedRespon
 router = APIRouter(prefix="/departments", tags=["departments"])
 
 
-@router.post("", response_model=DepartmentRead, status_code=status.HTTP_200_OK)
+@router.post(
+    "",
+    response_model=DepartmentRead,
+    status_code=status.HTTP_200_OK,
+    summary="Create department",
+    description="Creates a new department in the healthcare organization catalog. Restricted to admin and front-desk staff.",
+)
 def create_department(payload: DepartmentCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role not in {UserRole.admin, UserRole.front_desk}:
         raise AppError("Forbidden", status_code=403, error_type="forbidden")
@@ -19,7 +25,12 @@ def create_department(payload: DepartmentCreate, db: Session = Depends(get_db), 
     return department
 
 
-@router.get("", response_model=PaginatedResponse[DepartmentRead])
+@router.get(
+    "",
+    response_model=PaginatedResponse[DepartmentRead],
+    summary="List departments",
+    description="Returns a paginated list of departments available within the organization.",
+)
 def list_departments(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     repository = DepartmentRepository(db)
     items, total = repository.list_departments(offset=offset, limit=limit)

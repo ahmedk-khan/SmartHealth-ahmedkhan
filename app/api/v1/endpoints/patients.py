@@ -10,7 +10,12 @@ from app.schemas.domain import PatientRead
 router = APIRouter(prefix="/patients", tags=["patients"])
 
 
-@router.get("/{patient_id}", response_model=PatientRead)
+@router.get(
+    "/{patient_id}",
+    response_model=PatientRead,
+    summary="Get patient profile",
+    description="Fetches a patient profile by patient ID and enforces role-based access control.",
+)
 def read_patient(patient_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     repository = PatientRepository(db)
     patient = repository.get_by_id_or_user_id(patient_id)

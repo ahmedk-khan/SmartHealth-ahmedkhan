@@ -12,7 +12,13 @@ from app.schemas.domain import PaginatedResponse, SlotCreate, SlotRead
 router = APIRouter(prefix="/slots", tags=["slots"])
 
 
-@router.post("", response_model=SlotRead, status_code=status.HTTP_200_OK)
+@router.post(
+    "",
+    response_model=SlotRead,
+    status_code=status.HTTP_200_OK,
+    summary="Create slot",
+    description="Creates a new availability slot for a provider/service combination. Restricted to admin, front desk, and provider roles.",
+)
 def create_slot(payload: SlotCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
         raise AppError("Forbidden", status_code=403, error_type="forbidden")
@@ -22,7 +28,13 @@ def create_slot(payload: SlotCreate, db: Session = Depends(get_db), current_user
     return repository.create_slot(payload.model_dump())
 
 
-@router.post("/{slot_id}/reserve", response_model=SlotRead, status_code=status.HTTP_200_OK)
+@router.post(
+    "/{slot_id}/reserve",
+    response_model=SlotRead,
+    status_code=status.HTTP_200_OK,
+    summary="Reserve a slot",
+    description="Reserves a currently available slot for the authenticated patient.",
+)
 def reserve_slot(slot_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role != UserRole.patient:
         raise AppError("Forbidden", status_code=403, error_type="forbidden")
@@ -37,7 +49,12 @@ def reserve_slot(slot_id: int, db: Session = Depends(get_db), current_user: User
     return slot
 
 
-@router.get("", response_model=PaginatedResponse[SlotRead])
+@router.get(
+    "",
+    response_model=PaginatedResponse[SlotRead],
+    summary="List slots",
+    description="Returns a paginated list of slots, filtered for patient availability when applicable.",
+)
 def list_slots(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     repository = SlotRepository(db)
     items, total = repository.list_slots(offset=offset, limit=limit, patient_only_available=current_user.role == UserRole.patient)

@@ -12,7 +12,13 @@ from app.schemas.domain import DepartmentCreate, DepartmentRead, PaginatedRespon
 router = APIRouter(prefix="/providers", tags=["providers"])
 
 
-@router.post("", response_model=ProviderRead, status_code=status.HTTP_200_OK)
+@router.post(
+    "",
+    response_model=ProviderRead,
+    status_code=status.HTTP_200_OK,
+    summary="Create provider record",
+    description="Creates or returns the provider profile associated with the authenticated user. Allowed for admin, front desk, and provider roles.",
+)
 def create_provider(payload: ProviderCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
         raise AppError("Forbidden", status_code=403, error_type="forbidden")
@@ -23,7 +29,12 @@ def create_provider(payload: ProviderCreate, db: Session = Depends(get_db), curr
     return repository.create_provider(current_user.id, payload.bio, payload.department_id)
 
 
-@router.get("", response_model=PaginatedResponse[ProviderRead])
+@router.get(
+    "",
+    response_model=PaginatedResponse[ProviderRead],
+    summary="List providers",
+    description="Returns a paginated list of providers available in the system.",
+)
 def list_providers(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -35,7 +46,12 @@ def list_providers(
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
-@router.get("/{provider_id}/slots", response_model=PaginatedResponse[SlotRead])
+@router.get(
+    "/{provider_id}/slots",
+    response_model=PaginatedResponse[SlotRead],
+    summary="List provider slots",
+    description="Returns the paginated slot list for a specific provider while enforcing role-based access.",
+)
 def provider_slots(provider_id: int, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     repository = ProviderRepository(db)
     provider = repository.get_by_id(provider_id)

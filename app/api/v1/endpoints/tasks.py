@@ -6,7 +6,11 @@ from app.celery_app import celery_app
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-@router.get("/{task_id}")
+@router.get(
+    "/{task_id}",
+    summary="Get task status",
+    description="Checks the status of a background Celery task and returns its final or in-progress result when available.",
+)
 def get_task_status(task_id: str) -> dict[str, object]:
     result = AsyncResult(task_id, app=celery_app)
     response: dict[str, object] = {"task_id": task_id, "state": result.state}

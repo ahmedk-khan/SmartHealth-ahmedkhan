@@ -27,7 +27,36 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SmartHealth", lifespan=lifespan)
+app = FastAPI(
+    title="SmartHealth API",
+    version="1.0.0",
+    description=(
+        "SmartHealth is a healthcare scheduling and operations API for patient, provider, "
+        "appointment, and service workflows. The documented endpoints include authentication, "
+        "appointments, services, departments, providers, slots, tasks, and analytics."
+    ),
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    swagger_ui_parameters={"persistAuthorization": True},
+    contact={"name": "SmartHealth Team", "email": "support@smarthealth.local"},
+    license_info={"name": "MIT License"},
+    lifespan=lifespan,
+)
+
+app.openapi_tags = [
+    {"name": "health", "description": "Health and readiness checks for the service."},
+    {"name": "auth", "description": "Authentication and user identity flows."},
+    {"name": "appointments", "description": "Appointment booking, cancellation, rescheduling, and visit-flow operations."},
+    {"name": "services", "description": "Service catalog management and publication workflows."},
+    {"name": "slots", "description": "Slot availability and reservation operations."},
+    {"name": "providers", "description": "Provider profiles and provider-specific schedules."},
+    {"name": "patients", "description": "Patient profiles and patient-related lookup endpoints."},
+    {"name": "departments", "description": "Department catalog and organization metadata."},
+    {"name": "tasks", "description": "Background task status and operational lookup endpoints."},
+    {"name": "analytics", "description": "Operational and analytics summaries for reporting."},
+    {"name": "public", "description": "Public-facing catalog endpoints available without authenticated access."},
+]
 
 
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
@@ -71,12 +100,12 @@ app.exception_handler(HTTPException)(http_exception_handler)
 app.exception_handler(Exception)(unexpected_exception_handler)
 
 
-@app.get("/")
+@app.get("/", tags=["health"], summary="Service status", description="Returns a simple readiness signal to confirm the API is running.")
 def root():
     return {"message": "app api is running"}
 
 
-@app.get("/metrics")
+@app.get("/metrics", tags=["health"], summary="Prometheus metrics", description="Exposes Prometheus-formatted runtime metrics for scraping and monitoring.")
 async def metrics():
     """Prometheus metrics endpoint."""
     metrics_handler = create_metrics_endpoint()

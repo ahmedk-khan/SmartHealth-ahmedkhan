@@ -1,5 +1,6 @@
 import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
@@ -14,6 +15,7 @@ class ContentChunk(Base):
     service_id = Column(Integer, ForeignKey("services.id", ondelete="CASCADE"), nullable=False)
     chunk_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
+    embedding = Column(Vector(384), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
 

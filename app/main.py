@@ -56,6 +56,7 @@ app.openapi_tags = [
     {"name": "tasks", "description": "Background task status and operational lookup endpoints."},
     {"name": "analytics", "description": "Operational and analytics summaries for reporting."},
     {"name": "public", "description": "Public-facing catalog endpoints available without authenticated access."},
+    {"name": "search", "description": "Authenticated semantic search over published service content."},
 ]
 
 

@@ -7,28 +7,32 @@ from sqlalchemy.orm import Session
 
 from app import db as db_module
 from app.core.exceptions import AppError
-from app.models import ContentChunk, Service, ServiceStatus
+from app.models import ServiceStatus
+from app.repositories import ContentChunkRepository, ServiceRepository
+from app.services.embedding_service import generate_embeddings
 
 
 @activity.defn
 async def validate_service(service_id: int) -> dict[str, Any]:
     db: Session = db_module.SessionLocal()
     try:
-        service = db.query(Service).filter(Service.id == service_id).first()
+        repository = ServiceRepository(db)
+        service = repository.get_for_publication(service_id)
         if not service:
             raise AppError("Service not found", status_code=404, error_type="not_found")
         if service.status == ServiceStatus.PUBLISHED:
             return {"status": ServiceStatus.PUBLISHED.value, "service": None}
-        service.status = ServiceStatus.PUBLISHING
-        db.add(service)
-        db.commit()
+        repository.mark_publishing(service)
         return {
             "status": ServiceStatus.PUBLISHING.value,
             "service": {
                 "id": service.id,
                 "name": service.name,
                 "description": service.description or "",
+                "specialty": service.specialty or "",
+                "preparation_instructions": service.preparation_instructions or "",
                 "department_id": service.department_id,
+                "department_name": service.department.name,
             },
         }
     finally:
@@ -40,43 +44,54 @@ async def structure_service(service_data: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": service_data["name"],
         "description": service_data["description"],
+        "specialty": service_data["specialty"],
+        "preparation_instructions": service_data["preparation_instructions"],
         "department_id": service_data["department_id"],
+        "department_name": service_data["department_name"],
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
 
 
 @activity.defn
 async def chunk_service(service_struct: dict[str, Any]) -> list[dict[str, Any]]:
-    description = service_struct["description"]
+    description = service_struct.get("description", "")
     chunks: list[dict[str, Any]] = []
-    if not description:
-        return []
+    context = "\n".join(
+        (
+            f"Service: {service_struct['title']}",
+            f"Department: {service_struct.get('department_name', 'Not specified')}",
+            f"Specialty: {service_struct.get('specialty') or 'Not specified'}",
+            f"Preparation instructions: {service_struct.get('preparation_instructions') or 'Not specified'}",
+        )
+    )
     chunk_size = 120
-    for idx in range(0, len(description), chunk_size):
-        chunks.append({"chunk_index": idx // chunk_size, "content": description[idx : idx + chunk_size]})
+    for idx in range(0, max(len(description), 1), chunk_size):
+        chunks.append(
+            {
+                "chunk_index": idx // chunk_size,
+                "content": f"{context}\n\n{description[idx : idx + chunk_size]}",
+            }
+        )
     return chunks
+
+
+@activity.defn
+async def embed_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    embeddings = await generate_embeddings([chunk["content"] for chunk in chunks])
+    return [chunk | {"embedding": embedding} for chunk, embedding in zip(chunks, embeddings)]
 
 
 @activity.defn
 async def mark_published(service_id: int, chunks: list[dict[str, Any]]) -> dict[str, Any]:
     db: Session = db_module.SessionLocal()
     try:
-        service = db.query(Service).filter(Service.id == service_id).first()
+        service_repository = ServiceRepository(db)
+        chunk_repository = ContentChunkRepository(db)
+        service = service_repository.get_for_publication(service_id)
         if not service:
             raise AppError("Service not found", status_code=404, error_type="not_found")
-        service.status = ServiceStatus.PUBLISHED
-        service.is_published = True
-        db.add(service)
-        db.query(ContentChunk).filter(ContentChunk.service_id == service_id).delete()
-        for chunk in chunks:
-            db.add(
-                ContentChunk(
-                    service_id=service.id,
-                    chunk_index=chunk["chunk_index"],
-                    content=chunk["content"],
-                )
-            )
-        db.commit()
+        chunk_repository.replace_for_service(service.id, chunks)
+        service_repository.mark_published(service)
         return {"service_id": service.id, "published": True}
     finally:
         db.close()
@@ -92,9 +107,11 @@ class ServicePublishWorkflow:
             start_to_close_timeout=timedelta(seconds=30),
         )
         if published["status"] == ServiceStatus.PUBLISHED.value:
+            self._progress = {"status": ServiceStatus.PUBLISHED.value, "stage": "COMPLETE", "chunks_total": 0, "embeddings_generated": 0}
             self._status = ServiceStatus.PUBLISHED.value
             return {"workflow_status": published["status"]}
 
+        self._progress["stage"] = "STRUCTURING"
         service_struct = await workflow.execute_activity(
             structure_service,
             published["service"],
@@ -105,18 +122,31 @@ class ServicePublishWorkflow:
             service_struct,
             start_to_close_timeout=timedelta(seconds=30),
         )
+        self._progress.update({"stage": "EMBEDDING", "chunks_total": len(chunks)})
+        embedded_chunks = await workflow.execute_activity(
+            embed_chunks,
+            chunks,
+            start_to_close_timeout=timedelta(seconds=120),
+        )
+        self._progress.update({"stage": "PERSISTING", "embeddings_generated": len(embedded_chunks)})
         await workflow.execute_activity(
             mark_published,
             service_id,
-            chunks,
+            embedded_chunks,
             start_to_close_timeout=timedelta(seconds=30),
         )
+        self._progress.update({"stage": "COMPLETE", "status": ServiceStatus.PUBLISHED.value})
         self._status = ServiceStatus.PUBLISHED.value
         return {"workflow_status": ServiceStatus.PUBLISHED.value}
 
     def __init__(self) -> None:
         self._status = ServiceStatus.PUBLISHING.value
+        self._progress = {"status": self._status, "stage": "VALIDATING", "chunks_total": 0, "embeddings_generated": 0}
 
     @workflow.query(name="publish_status")
     def publish_status(self) -> str:
         return self._status
+
+    @workflow.query(name="publish_progress")
+    def publish_progress(self) -> dict[str, Any]:
+        return self._progress

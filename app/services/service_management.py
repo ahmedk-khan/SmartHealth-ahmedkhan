@@ -10,7 +10,7 @@ from app.core.settings import settings
 from app.models import ServiceStatus, User, UserRole
 from app.repositories import ServiceRepository
 from app.services.base import BaseService
-from app.workflows.service_publish import ServicePublishWorkflow, chunk_service, mark_published, structure_service, validate_service
+from app.workflows.service_publish import ServicePublishWorkflow, chunk_service, embed_chunks, mark_published, structure_service, validate_service
 
 
 _LOCAL_PUBLISH_WORKFLOWS: dict[str, dict[str, Any]] = {}
@@ -21,7 +21,9 @@ class _LocalWorkflowHandle:
         self.workflow_id = workflow_id
         self.run_id = str(uuid.uuid4())
 
-    async def query(self, query_name: str) -> str:
+    async def query(self, query_name: str) -> Any:
+        if query_name == "publish_progress":
+            return _LOCAL_PUBLISH_WORKFLOWS[self.workflow_id]
         if query_name != "publish_status":
             raise AppError("Unsupported query", status_code=400, error_type="invalid_query")
         return _LOCAL_PUBLISH_WORKFLOWS[self.workflow_id]["status"]
@@ -91,11 +93,13 @@ class ServiceManagementService(BaseService):
         try:
             client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
             handle = client.get_workflow_handle(workflow_id)
-            status_value = await handle.query("publish_status")
-            return {"workflow_id": workflow_id, "status": status_value}
+            progress = await handle.query("publish_progress")
+            if isinstance(progress, str):
+                return {"workflow_id": workflow_id, "status": progress}
+            return {"workflow_id": workflow_id, **progress}
         except Exception as exc:
             if workflow_id in _LOCAL_PUBLISH_WORKFLOWS:
-                return {"workflow_id": workflow_id, "status": _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"]}
+                return {"workflow_id": workflow_id, **_LOCAL_PUBLISH_WORKFLOWS[workflow_id]}
             if "not found" in str(exc).lower() or "workflow could not be found" in str(exc).lower():
                 if service.status == ServiceStatus.PUBLISHED:
                     return {"workflow_id": workflow_id, "status": ServiceStatus.PUBLISHED.value}
@@ -103,16 +107,28 @@ class ServiceManagementService(BaseService):
             raise
 
     async def _start_local_publish_workflow(self, service_id: int, workflow_id: str) -> _LocalWorkflowHandle:
-        _LOCAL_PUBLISH_WORKFLOWS[workflow_id] = {"status": ServiceStatus.PUBLISHING.value, "run_id": str(uuid.uuid4())}
+        _LOCAL_PUBLISH_WORKFLOWS[workflow_id] = {
+            "status": ServiceStatus.PUBLISHING.value,
+            "stage": "VALIDATING",
+            "chunks_total": 0,
+            "embeddings_generated": 0,
+            "run_id": str(uuid.uuid4()),
+        }
         try:
             published = await validate_service(service_id)
             if published["status"] == ServiceStatus.PUBLISHED.value:
                 _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = ServiceStatus.PUBLISHED.value
+                _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "COMPLETE"
                 return _LocalWorkflowHandle(workflow_id)
 
             service_struct = await structure_service(published["service"])
+            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "CHUNKING"
             chunks = await chunk_service(service_struct)
-            await mark_published(service_id, chunks)
+            _LOCAL_PUBLISH_WORKFLOWS[workflow_id].update({"stage": "EMBEDDING", "chunks_total": len(chunks)})
+            embedded_chunks = await embed_chunks(chunks)
+            _LOCAL_PUBLISH_WORKFLOWS[workflow_id].update({"stage": "PERSISTING", "embeddings_generated": len(embedded_chunks)})
+            await mark_published(service_id, embedded_chunks)
+            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "COMPLETE"
             _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = ServiceStatus.PUBLISHED.value
             return _LocalWorkflowHandle(workflow_id)
         except Exception as exc:

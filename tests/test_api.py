@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime, timezone
 
@@ -29,6 +30,7 @@ from app.models import (
     User,
     UserRole,
 )
+from app.workflows.service_publish import chunk_service
 
 
 @pytest.fixture()
@@ -86,6 +88,28 @@ def _ensure_patient(db, user_id):
     db.commit()
     db.refresh(patient)
     return patient
+
+
+def test_chunk_service_includes_service_context():
+    chunks = asyncio.run(
+        chunk_service(
+        {
+            "title": "MRI Scan",
+            "department_name": "Radiology",
+            "specialty": "Musculoskeletal imaging",
+            "preparation_instructions": "Avoid metal accessories before the scan.",
+            "description": "A diagnostic imaging service.",
+        }
+        )
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["chunk_index"] == 0
+    assert "Service: MRI Scan" in chunks[0]["content"]
+    assert "Department: Radiology" in chunks[0]["content"]
+    assert "Specialty: Musculoskeletal imaging" in chunks[0]["content"]
+    assert "Preparation instructions: Avoid metal accessories before the scan." in chunks[0]["content"]
+    assert "A diagnostic imaging service." in chunks[0]["content"]
 
 
 def test_register_login_and_invalid_token(client):
@@ -941,6 +965,9 @@ def test_service_publish_starts_workflow_and_writes_chunks(client):
     status_payload = status_response.json()
     assert status_payload["workflow_id"] == f"service-publish-{service_id}"
     assert status_payload["status"] in {"PUBLISHING", "PUBLISHED"}
+    assert status_payload["stage"] in {"EMBEDDING", "PERSISTING", "COMPLETE"}
+    assert status_payload["chunks_total"] >= 1
+    assert status_payload["embeddings_generated"] >= 1
 
     from app.db import SessionLocal
 
@@ -950,6 +977,24 @@ def test_service_publish_starts_workflow_and_writes_chunks(client):
         assert service is not None
         assert service.status == "PUBLISHED"
         assert service.is_published is True
-        assert db.query(ContentChunk).filter(ContentChunk.service_id == service_id).count() >= 1
+        chunks = db.query(ContentChunk).filter(ContentChunk.service_id == service_id).all()
+        assert len(chunks) >= 1
+        assert chunks[0].embedding is not None
     finally:
         db.close()
+
+    from app.core.settings import settings
+
+    original_min_similarity = settings.retrieval_min_similarity
+    settings.retrieval_min_similarity = 0.0
+    try:
+        search_response = client.post("/search", json={"query": "MRI Scan", "limit": 5}, headers=admin_headers)
+        assert search_response.status_code == 200
+        search_payload = search_response.json()
+        assert search_payload["results"]
+        result = next(item for item in search_payload["results"] if item["service_id"] == service_id)
+        assert result["score"] > 0
+        assert result["department"] == "Neurology"
+        assert result["specialty"] is None
+    finally:
+        settings.retrieval_min_similarity = original_min_similarity

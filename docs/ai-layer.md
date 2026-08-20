@@ -8,6 +8,27 @@ A common comparison is cosine similarity. It measures the angle between two vect
 
 Embeddings support finding relevant context; they do not prove that two statements are equivalent, current, or clinically safe. Retrieved content should therefore be treated as evidence for a later answer, not as an answer by itself. Results must pass normal authentication and authorization filters before retrieval, and source/version metadata should be retained so responses can be traced back to approved content. Exact identifiers, dates, dosage values, and negations may require keyword or structured filters alongside vector search. In healthcare workflows, a similarity score must never be interpreted as a diagnosis, risk probability, or substitute for professional review.
 
+## Publication and Chunk Contract
+
+Publishing a service runs validation, structuring, chunking, embedding, and persistence stages. The publish-status response keeps the current `status` value and also exposes `stage`, `chunks_total`, and `embeddings_generated`, so clients can show progress while the workflow is running.
+
+Every content chunk deliberately starts with the same labeled context block:
+
+```text
+Service: <service name>
+Department: <department name>
+Specialty: <specialty or Not specified>
+Preparation instructions: <instructions or Not specified>
+```
+
+The description is then split into 120-character segments and appended to that context. Repeating the context in each chunk prevents retrieval results from losing the service identity or preparation guidance when only one chunk is returned. Chunks are embedded with the configured 384-dimensional model and stored in the `content_chunks.embedding` pgvector column.
+
+## Service Search
+
+`POST /search` and `POST /api/v1/search` accept `{"query": "...", "limit": 5}` and require authentication. They return published services ranked by cosine similarity, with `service_id`, `service_name`, `score`, `department`, `specialty`, and the best matching chunk content. Results below `RETRIEVAL_MIN_SIMILARITY` are omitted, and only the highest-scoring chunk per service is returned.
+
+When `EMBEDDING_API_KEY` is unset, local development uses a deterministic token-based embedding so workflows and tests remain runnable. Production deployments should configure the selected embedding provider and key.
+
 Further reading:
 
 - [Sentence Transformers: Semantic Search](https://www.sbert.net/examples/sentence_transformer/applications/semantic-search/README.html)

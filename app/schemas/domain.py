@@ -53,6 +53,8 @@ class ServiceStatus(str, Enum):
 class ServiceBase(BaseModel):
     name: str
     description: Optional[str] = None
+    specialty: Optional[str] = None
+    preparation_instructions: Optional[str] = None
     department_id: int
     is_published: bool = False
 

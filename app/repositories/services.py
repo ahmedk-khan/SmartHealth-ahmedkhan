@@ -1,5 +1,3 @@
-from sqlalchemy.orm import Session
-
 from app.models import Department, Service, ServiceStatus
 from app.repositories.base import BaseRepository
 
@@ -7,6 +5,20 @@ from app.repositories.base import BaseRepository
 class ServiceRepository(BaseRepository):
     def get_by_id(self, service_id: int) -> Service | None:
         return self.db.query(Service).filter(Service.id == service_id).first()
+
+    def get_for_publication(self, service_id: int) -> Service | None:
+        return self.db.query(Service).filter(Service.id == service_id).first()
+
+    def mark_publishing(self, service: Service) -> None:
+        service.status = ServiceStatus.PUBLISHING
+        self.db.add(service)
+        self.db.commit()
+
+    def mark_published(self, service: Service) -> None:
+        service.status = ServiceStatus.PUBLISHED
+        service.is_published = True
+        self.db.add(service)
+        self.db.commit()
 
     def department_exists(self, department_id: int) -> bool:
         return self.db.query(Department).filter(Department.id == department_id).first() is not None

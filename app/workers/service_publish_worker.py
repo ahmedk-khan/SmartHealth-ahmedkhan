@@ -3,7 +3,7 @@ import asyncio
 from temporalio import client, worker, runtime
 
 from app.core.settings import settings
-from app.workflows.service_publish import ServicePublishWorkflow, validate_service, structure_service, chunk_service, mark_published
+from app.workflows.service_publish import ServicePublishWorkflow, validate_service, structure_service, chunk_service, embed_chunks, mark_published
 
 
 def main() -> None:
@@ -14,7 +14,7 @@ def main() -> None:
             temporal_client,
             task_queue=settings.temporal_task_queue,
             workflows=[ServicePublishWorkflow],
-            activities=[validate_service, structure_service, chunk_service, mark_published],
+            activities=[validate_service, structure_service, chunk_service, embed_chunks, mark_published],
         ) as temporal_worker:
             await temporal_worker.run()
 

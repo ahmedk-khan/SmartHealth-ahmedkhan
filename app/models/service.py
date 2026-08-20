@@ -29,6 +29,8 @@ class Service(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(length=140), nullable=False, index=True)
     description = Column(Text, nullable=True)
+    specialty = Column(String(length=140), nullable=True)
+    preparation_instructions = Column(Text, nullable=True)
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=False)
     is_published = Column(Boolean, nullable=False, default=False)
     status = Column(SAEnum(ServiceStatus), nullable=False, default=ServiceStatus.DRAFT)

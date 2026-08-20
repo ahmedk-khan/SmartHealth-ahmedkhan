@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     kafka_bootstrap_servers: str = Field(default="localhost:9092", alias="KAFKA_BOOTSTRAP_SERVERS")
     kafka_consumer_group: str = Field(default="app-analytics", alias="KAFKA_CONSUMER_GROUP")
     kafka_topic_prefix: str = Field(default="app", alias="KAFKA_TOPIC_PREFIX")
+    embedding_provider: str = Field(default="huggingface", alias="EMBEDDING_PROVIDER")
+    embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
+    embedding_model: str = Field(default="sentence-transformers/all-MiniLM-L6-v2", alias="EMBEDDING_MODEL")
+    embedding_dimensions: int = Field(default=384, alias="EMBEDDING_DIMENSIONS")
+    retrieval_top_k: int = Field(default=5, alias="RETRIEVAL_TOP_K")
+    retrieval_min_similarity: float = Field(default=0.65, alias="RETRIEVAL_MIN_SIMILARITY")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

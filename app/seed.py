@@ -48,6 +48,8 @@ def seed() -> None:
             service = Service(
                 name="General Consultation",
                 description="Routine checkup",
+                specialty="Primary care",
+                preparation_instructions="Bring a list of current medications and relevant medical history.",
                 department_id=department.id,
                 is_published=True,
             )

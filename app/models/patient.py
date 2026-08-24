@@ -19,3 +19,7 @@ class Patient(Base):
     user = relationship("User", back_populates="patient", uselist=False)
     slots = relationship("Slot", back_populates="patient")
     appointments = relationship("Appointment", back_populates="patient")
+
+    @property
+    def email(self):
+        return self.user.email if self.user else None

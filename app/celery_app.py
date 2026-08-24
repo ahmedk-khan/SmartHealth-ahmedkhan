@@ -18,6 +18,7 @@ celery_app.conf.update(
     imports=(
         "app.workers.tasks.appointment_tasks",
         "app.workers.tasks.analytics_tasks",
+        "app.workers.tasks.outbox_tasks",
     ),
     timezone="UTC",
     enable_utc=True,

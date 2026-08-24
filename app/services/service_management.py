@@ -7,9 +7,10 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from app.core.exceptions import AppError
 from app.core.settings import settings
-from app.models import ServiceStatus, User, UserRole
+from app.models import Provider, ServiceStatus, User, UserRole
 from app.repositories import ServiceRepository
 from app.services.base import BaseService
+from app.services.healthcare_event_service import HealthcareEventService
 from app.workflows.service_publish import ServicePublishWorkflow, chunk_service, embed_chunks, mark_published, structure_service, validate_service
 
 
@@ -41,7 +42,30 @@ class ServiceManagementService(BaseService):
             raise AppError("Department not found", status_code=404, error_type="not_found")
         service_data = payload.model_dump()
         service_data["status"] = ServiceStatus.PUBLISHED if service_data.get("is_published") else ServiceStatus.DRAFT
-        return self.repository.create_service(service_data)
+        created = self.repository.create_service(service_data)
+        if current_user.role == UserRole.provider:
+            provider = self.db.query(Provider).filter(Provider.user_id == current_user.id).first()
+            if provider:
+                provider.services.append(created)
+                self.db.add(provider)
+                self.db.commit()
+                self.db.refresh(provider)
+                self.db.refresh(created)
+        HealthcareEventService().publish_service_event("service.created", service_id=created.id, department_id=created.department_id, status=created.status.value)
+        return created
+
+    def update_service(self, service_id: int, payload, current_user: User):
+        if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        service = self.repository.get_by_id(service_id)
+        if not service:
+            raise AppError("Service not found", status_code=404, error_type="not_found")
+        self._ensure_provider_service_access(service, current_user)
+        if not self.repository.department_exists(payload.department_id):
+            raise AppError("Department not found", status_code=404, error_type="not_found")
+        data = payload.model_dump()
+        data["status"] = service.status if payload.is_published else ServiceStatus.DRAFT
+        return self.repository.update_service(service, data)
 
     async def publish_service(self, service_id: int, current_user: User):
         if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
@@ -49,6 +73,7 @@ class ServiceManagementService(BaseService):
         service = self.repository.get_by_id(service_id)
         if not service:
             raise AppError("Service not found", status_code=404, error_type="not_found")
+        self._ensure_provider_service_access(service, current_user)
         if service.status == ServiceStatus.PUBLISHED:
             raise AppError("Service is already published", status_code=409, error_type="conflict")
         if service.status == ServiceStatus.PUBLISHING:
@@ -59,21 +84,21 @@ class ServiceManagementService(BaseService):
         workflow_id = f"service-publish-{service.id}"
         try:
             client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
-            try:
-                handle = await client.start_workflow(
-                    ServicePublishWorkflow.run,
-                    service.id,
-                    id=workflow_id,
-                    task_queue=settings.temporal_task_queue,
-                    id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
-                    id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
-                )
-            except WorkflowAlreadyStartedError:
-                handle = client.get_workflow_handle(workflow_id)
-            return {"workflow_id": workflow_id, "run_id": handle.run_id}
         except Exception:
             handle = await self._start_local_publish_workflow(service.id, workflow_id)
             return {"workflow_id": workflow_id, "run_id": handle.run_id}
+        try:
+            handle = await client.start_workflow(
+                ServicePublishWorkflow.run,
+                service.id,
+                id=workflow_id,
+                task_queue=settings.temporal_task_queue,
+                id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+                id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
+            )
+        except WorkflowAlreadyStartedError:
+            handle = client.get_workflow_handle(workflow_id)
+        return {"workflow_id": workflow_id, "run_id": handle.run_id}
 
     def unpublish_service(self, service_id: int, current_user: User):
         if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
@@ -81,14 +106,18 @@ class ServiceManagementService(BaseService):
         service = self.repository.get_by_id(service_id)
         if not service:
             raise AppError("Service not found", status_code=404, error_type="not_found")
+        self._ensure_provider_service_access(service, current_user)
         if service.status != ServiceStatus.PUBLISHED:
             raise AppError("Service is not published", status_code=409, error_type="conflict")
-        return self.repository.unpublish(service)
+        unpublished = self.repository.unpublish(service)
+        HealthcareEventService().publish_service_event("service.unpublished", service_id=unpublished.id, department_id=unpublished.department_id, status=unpublished.status.value)
+        return unpublished
 
     async def publish_status(self, service_id: int, current_user: User):
         service = self.repository.get_by_id(service_id)
         if not service:
             raise AppError("Service not found", status_code=404, error_type="not_found")
+        self._ensure_provider_service_access(service, current_user)
         workflow_id = f"service-publish-{service.id}"
         try:
             client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
@@ -105,6 +134,13 @@ class ServiceManagementService(BaseService):
                     return {"workflow_id": workflow_id, "status": ServiceStatus.PUBLISHED.value}
                 raise AppError("Publish workflow not found", status_code=404, error_type="workflow_not_found")
             raise
+
+    def _ensure_provider_service_access(self, service, current_user: User) -> None:
+        if current_user.role != UserRole.provider:
+            return
+        provider = self.db.query(Provider).filter(Provider.user_id == current_user.id).first()
+        if not provider or service not in provider.services:
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
 
     async def _start_local_publish_workflow(self, service_id: int, workflow_id: str) -> _LocalWorkflowHandle:
         _LOCAL_PUBLISH_WORKFLOWS[workflow_id] = {
@@ -127,7 +163,7 @@ class ServiceManagementService(BaseService):
             _LOCAL_PUBLISH_WORKFLOWS[workflow_id].update({"stage": "EMBEDDING", "chunks_total": len(chunks)})
             embedded_chunks = await embed_chunks(chunks)
             _LOCAL_PUBLISH_WORKFLOWS[workflow_id].update({"stage": "PERSISTING", "embeddings_generated": len(embedded_chunks)})
-            await mark_published(service_id, embedded_chunks)
+            await mark_published({"service_id": service_id, "chunks": embedded_chunks})
             _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "COMPLETE"
             _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = ServiceStatus.PUBLISHED.value
             return _LocalWorkflowHandle(workflow_id)

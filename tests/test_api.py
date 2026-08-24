@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 from app.core import dependencies
+from app.core.security import get_password_hash
 from app.db import Base
 from app.main import app
 from app.models import (
@@ -71,6 +72,27 @@ def _create_user(client, email, password, role):
     )
     assert response.status_code == 200
     return response.json()
+
+
+def _create_user_record(email, password, role, first_name=None, last_name=None):
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        user = User(
+            email=email,
+            hashed_password=get_password_hash(password),
+            role=UserRole(role),
+        )
+        db.add(user)
+        db.flush()
+        if role == "patient":
+            db.add(Patient(user_id=user.id, first_name=first_name, last_name=last_name))
+        db.commit()
+        db.refresh(user)
+        return user
+    finally:
+        db.close()
 
 
 def _login(client, email, password):
@@ -176,7 +198,7 @@ def test_patient_register_creates_profile_and_can_reserve_slot(client):
 
 
 def test_patient_cannot_access_provider_schedule_or_other_patient_data(client):
-    admin = _create_user(client, "admin@example.com", "secret123", "admin")
+    admin = _create_user_record("admin@example.com", "secret123", "admin")
     patient_user = _create_user(client, "patient@example.com", "secret123", "patient")
 
     from app.db import SessionLocal
@@ -241,8 +263,97 @@ def test_list_providers_requires_authentication(client):
     assert response.status_code == 401
 
 
+def test_operational_endpoints_require_authentication(client):
+    assert client.get("/api/v1/analytics/summary").status_code == 401
+    assert client.get("/api/v1/analytics/reconcile").status_code == 401
+    assert client.get("/api/v1/tasks/example-task").status_code == 401
+
+
+def test_admin_can_list_and_search_patients(client):
+    _create_user_record("admin@example.com", "secret123", "admin")
+    _create_user(client, "alice@example.com", "secret123", "patient")
+    _create_user(client, "bob@example.com", "secret123", "patient")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        alice = db.query(User).filter(User.email == "alice@example.com").one()
+        bob = db.query(User).filter(User.email == "bob@example.com").one()
+
+        _ensure_patient(db, alice.id)
+        patient = _ensure_patient(db, bob.id)
+        patient.first_name = "Bob"
+        patient.last_name = "Johnson"
+        db.commit()
+    finally:
+        db.close()
+
+    admin_token = _login(client, "admin@example.com", "secret123")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    response = client.get("/api/v1/patients?limit=10&offset=0&search=Bob", headers=headers)
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["total"] >= 1
+    assert any(item["first_name"] == "Bob" for item in data["items"])
+
+
+def test_admin_can_provision_existing_provider_user(client):
+    _create_user_record("admin@example.com", "secret123", "admin")
+    provider_user = _create_user(client, "doctor@example.com", "secret123", "provider")
+
+    admin_token = _login(client, "admin@example.com", "secret123")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    response = client.post(
+        "/api/v1/providers",
+        json={"user_id": provider_user["id"], "specialty": "Cardiology"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == provider_user["id"]
+
+
+def test_provider_can_update_own_profile_using_user_id_or_provider_id(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    provider_user = _create_user(client, "doctor@example.com", "secret123", "provider")
+
+    provider_token = _login(client, "doctor@example.com", "secret123")
+    provider_headers = {"Authorization": f"Bearer {provider_token}"}
+
+    create_response = client.post(
+        "/api/v1/providers",
+        json={"bio": "General medicine", "specialty": "Cardiology"},
+        headers=provider_headers,
+    )
+    assert create_response.status_code == 200
+    provider = create_response.json()
+
+    assert provider["user_id"] == provider_user["id"]
+    assert provider["id"] != provider_user["id"]
+
+    update_by_user_id = client.patch(
+        f"/api/v1/providers/{provider_user['id']}",
+        json={"bio": "Updated bio"},
+        headers=provider_headers,
+    )
+    assert update_by_user_id.status_code == 200
+    assert update_by_user_id.json()["bio"] == "Updated bio"
+
+    update_by_provider_id = client.patch(
+        f"/api/v1/providers/{provider['id']}",
+        json={"specialty": "Family medicine"},
+        headers=provider_headers,
+    )
+    assert update_by_provider_id.status_code == 200
+    assert update_by_provider_id.json()["specialty"] == "Family medicine"
+
+
 def test_staff_can_create_and_list_services_with_public_filters(client):
-    _create_user(client, "admin@example.com", "secret123", "admin")
+    _create_user_record("admin@example.com", "secret123", "admin")
     _create_user(client, "patient@example.com", "secret123", "patient")
     admin_token = _login(client, "admin@example.com", "secret123")
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
@@ -418,7 +529,7 @@ def test_appointment_saga_endpoints_create_state_cancel_and_reschedule(client):
         headers=patient_headers,
     )
     assert reschedule_response.status_code == 200
-    assert reschedule_response.json()["status"] == "PENDING"
+    assert reschedule_response.json()["status"] == "SLOT_RESERVED"
 
     cancel_response = client.post(f"/api/v1/appointments/{appointment_id}/cancel", headers=patient_headers)
     assert cancel_response.status_code == 200
@@ -839,7 +950,7 @@ def test_saga_compensation_releases_slot_on_failure(client):
 
 
 def test_service_publish_rejects_illegal_state_transitions(client):
-    _create_user(client, "admin@example.com", "secret123", "admin")
+    _create_user_record("admin@example.com", "secret123", "admin")
     admin_token = _login(client, "admin@example.com", "secret123")
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
@@ -862,6 +973,47 @@ def test_service_publish_rejects_illegal_state_transitions(client):
 
     publish_response = client.post(f"/api/v1/services/{service_id}/publish", headers=admin_headers)
     assert publish_response.status_code == 409
+
+
+def test_service_list_handles_failed_publish_status(client):
+    _create_user_record("admin@example.com", "secret123", "admin")
+    _create_user(client, "patient@example.com", "secret123", "patient")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        department = Department(name="Neurology", description="Brain care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+
+        failed_service = Service(
+            name="MRI",
+            description="Brain imaging",
+            department_id=department.id,
+            status=ServiceStatus.PUBLISH_FAILED,
+            is_published=False,
+        )
+        db.add(failed_service)
+        db.commit()
+        db.refresh(failed_service)
+        service_id = failed_service.id
+    finally:
+        db.close()
+
+    admin_token = _login(client, "admin@example.com", "secret123")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    admin_response = client.get("/api/v1/services?limit=20&offset=0", headers=admin_headers)
+    assert admin_response.status_code == 200
+    assert any(item["id"] == service_id and item["status"] == "PUBLISH_FAILED" for item in admin_response.json()["items"])
+
+    patient_token = _login(client, "patient@example.com", "secret123")
+    patient_headers = {"Authorization": f"Bearer {patient_token}"}
+    public_response = client.get("/api/v1/public/services?limit=20&offset=0", headers=patient_headers)
+    assert public_response.status_code == 200
+    assert any(item["id"] == service_id and item["status"] == "PUBLISH_FAILED" for item in public_response.json()["items"])
 
 
 def test_visit_illegal_transition_is_rejected(client):
@@ -934,8 +1086,52 @@ def test_duplicate_registration_is_rejected(client):
     assert second.status_code == 400
 
 
+def test_registration_saves_name_for_patient_accounts(client):
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "namecheck@example.com",
+            "password": "secret123",
+            "role": "patient",
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["email"] == "namecheck@example.com"
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "namecheck@example.com").one()
+        assert user.patient is not None
+        assert user.patient.first_name == "Ada"
+        assert user.patient.last_name == "Lovelace"
+    finally:
+        db.close()
+
+
+def test_admin_self_registration_is_blocked_by_default(client):
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "admin-self@example.com",
+            "password": "secret123",
+            "role": "admin",
+            "first_name": "Root",
+            "last_name": "User",
+        },
+    )
+
+    assert response.status_code == 403
+    assert "disabled" in response.json()["error"]["message"].lower()
+
+
 def test_service_publish_starts_workflow_and_writes_chunks(client):
-    _create_user(client, "admin@example.com", "secret123", "admin")
+    _create_user_record("admin@example.com", "secret123", "admin")
     admin_token = _login(client, "admin@example.com", "secret123")
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
@@ -949,7 +1145,13 @@ def test_service_publish_starts_workflow_and_writes_chunks(client):
 
     service_response = client.post(
         "/api/v1/services",
-        json={"name": "MRI Scan", "description": "MRI diagnostic", "department_id": department_id, "is_published": False},
+        json={
+            "name": "MRI Scan",
+            "description": "MRI diagnostic",
+            "preparation_instructions": "Bring prior imaging reports.",
+            "department_id": department_id,
+            "is_published": False,
+        },
         headers=admin_headers,
     )
     assert service_response.status_code == 200

@@ -32,9 +32,11 @@ _ALLOWED_EVENT_KEYS = {
     "new_slot_id",
     "department_id",
     "billing_id",
+    "amount",
     "visit_status",
     "status",
     "workflow_id",
+    "version",
 }
 
 _DENYLIST_KEYS = {
@@ -136,10 +138,12 @@ class KafkaEventPublisher:
             "occurred_at": datetime.now(timezone.utc).isoformat(),
             "source": "smarthealth-api",
             "schema_version": 1,
+            "version": 1,
             "entity_type": entity_type,
             "entity_id": str(entity_id),
             **normalized_metadata,
         }
+        payload["data"] = dict(normalized_metadata)
 
         producer = self._get_producer()
         if producer is None:

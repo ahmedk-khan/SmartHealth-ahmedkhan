@@ -63,7 +63,17 @@ flowchart LR
 
 ## Quick start
 
-### 1. Configure environment
+### 1. Start the complete demo
+
+```bash
+docker compose up --build
+```
+
+This starts PostgreSQL, Redis, Kafka, Temporal, the API, Celery, the Temporal worker, and the analytics consumer. The API container applies migrations and seeds the demo accounts before serving traffic. Open `http://localhost:8000/docs` to run the flows.
+
+To run the application manually instead, continue with the steps below.
+
+### 2. Configure environment
 
 Copy the example environment file and update values as needed:
 
@@ -71,7 +81,7 @@ Copy the example environment file and update values as needed:
 copy .env.example .env
 ```
 
-### 2. Start supporting infrastructure
+### 3. Start supporting infrastructure
 
 ```bash
 docker compose up -d
@@ -84,31 +94,31 @@ This brings up the main dependencies required by the platform:
 - Kafka
 - Temporal
 
-### 3. Install dependencies
+### 4. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Apply database migrations
+### 5. Apply database migrations
 
 ```bash
 alembic upgrade head
 ```
 
-### 5. Start the API service
+### 6. Start the API service
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-### 6. Start background workers
+### 7. Start background workers
 
 ```bash
 celery -A app.celery_app worker --loglevel=info
 ```
 
-### 7. Start Temporal workflow worker if required
+### 8. Start Temporal workflow worker if required
 
 ```bash
 python -m app.workers.service_publish_worker
@@ -180,6 +190,23 @@ python -m app.workers.service_publish_worker
 - `GET /api/v1/public/services`
   - public listing of published services
 
+## Environment variables
+
+Copy `.env.example` to `.env` for local Docker execution. The important settings are:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | SQLAlchemy database connection |
+| `JWT_SECRET` | Signing key for access tokens |
+| `TEMPORAL_HOST` | Temporal frontend address |
+| `TEMPORAL_TASK_QUEUE` | Shared workflow task queue |
+| `REDIS_URL` | Idempotency store connection |
+| `CELERY_BROKER_URL` | Celery broker connection |
+| `KAFKA_ENABLED` | Enables Kafka event publishing |
+| `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker address |
+| `EMBEDDING_PROVIDER` | Service search embedding backend |
+| `RETRIEVAL_TOP_K` | Maximum semantic search results |
+
 ## Operational patterns
 
 ### Role-based access control
@@ -230,12 +257,24 @@ Run the test suite with:
 pytest -q
 ```
 
+Common development commands are also available through the `Makefile`:
+
+```bash
+make demo
+make test
+make lint
+```
+
+The Temporal entrypoint is `python -m app.temporal.worker`; the original workflow modules remain under `app/workflows/` as the implementation layer. Operational helpers live under `scripts/`.
+
 ## Documentation index
 
 - [docs/design.md](docs/design.md) — system design and domain model overview
 - [docs/STRUCTURED_LOGGING.md](docs/STRUCTURED_LOGGING.md) — structured logging and correlation tracing
 - [docs/events.md](docs/events.md) — event contracts and integration patterns
 - [docs/runbook.md](docs/runbook.md) — operational start-up and incident response guidance
+- [docs/prd.md](docs/prd.md) — demo requirements and success criteria
+- [docs/diagrams/architecture.md](docs/diagrams/architecture.md) — architecture diagram
 
 ## Notes
 

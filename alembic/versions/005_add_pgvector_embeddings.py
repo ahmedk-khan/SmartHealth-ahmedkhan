@@ -11,7 +11,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.add_column("content_chunks", sa.Column("embedding", Vector(384), nullable=True))
     op.create_index(
         "ix_content_chunks_embedding_hnsw",
@@ -25,4 +26,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_content_chunks_embedding_hnsw", table_name="content_chunks")
     op.drop_column("content_chunks", "embedding")
-    op.execute("DROP EXTENSION IF EXISTS vector")
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("DROP EXTENSION IF EXISTS vector")

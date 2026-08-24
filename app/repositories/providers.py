@@ -1,19 +1,28 @@
-from sqlalchemy.orm import Session
-
 from app.models import Provider, Slot
+from app.models.service import Service, provider_services
 from app.repositories.base import BaseRepository
 
 
 class ProviderRepository(BaseRepository):
+    def update_profile(self, provider: Provider, data: dict) -> Provider:
+        for field in ("bio", "specialty", "department_id"):
+            if field in data:
+                setattr(provider, field, data[field])
+        self.db.commit()
+        self.db.refresh(provider)
+        return provider
+
     def get_by_user_id(self, user_id: int) -> Provider | None:
         return self.db.query(Provider).filter(Provider.user_id == user_id).first()
 
     def get_by_id(self, provider_id: int) -> Provider | None:
         return self.db.query(Provider).filter(Provider.id == provider_id).first()
 
-    def create_provider(self, user_id: int, bio: str | None, department_id: int | None) -> Provider:
-        provider = Provider(user_id=user_id, bio=bio, department_id=department_id)
+    def create_provider(self, user_id: int, bio: str | None, department_id: int | None, specialty: str | None = None) -> Provider:
+        provider = Provider(user_id=user_id, bio=bio, department_id=department_id, specialty=specialty)
         self.db.add(provider)
+        self.db.flush()
+        self.audit("provider", provider.id, "created", actor_user_id=user_id, after={"department_id": department_id, "specialty": specialty})
         self.db.commit()
         self.db.refresh(provider)
         return provider
@@ -28,4 +37,14 @@ class ProviderRepository(BaseRepository):
         query = self.db.query(Slot).filter(Slot.provider_id == provider_id)
         total = query.count()
         items = query.order_by(Slot.start_datetime).offset(offset).limit(limit).all()
+        return items, total
+
+    def list_services(self, provider_id: int, offset: int, limit: int) -> tuple[list[Service], int]:
+        query = (
+            self.db.query(Service)
+            .join(provider_services, provider_services.c.service_id == Service.id)
+            .filter(provider_services.c.provider_id == provider_id)
+        )
+        total = query.distinct(Service.id).count()
+        items = query.distinct(Service.id).order_by(Service.id).offset(offset).limit(limit).all()
         return items, total

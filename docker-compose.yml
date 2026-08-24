@@ -1,12 +1,16 @@
 services:
   api:
     build: .
+    command: sh -c "alembic upgrade head && python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
     volumes:
       - ./app:/app/app
     env_file:
-      - .env
+      - path: .env
+        required: false
+      - path: .env.example
+        required: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -23,7 +27,10 @@ services:
     volumes:
       - ./app:/app/app
     env_file:
-      - .env
+      - path: .env
+        required: false
+      - path: .env.example
+        required: true
     depends_on:
       redis:
         condition: service_started
@@ -34,13 +41,34 @@ services:
       kafka:
         condition: service_healthy
 
+  temporal-worker:
+    build: .
+    command: python -m app.temporal.worker
+    volumes:
+      - ./app:/app/app
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.example
+        required: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+      redis:
+        condition: service_started
+
   analytics-consumer:
     build: .
     command: python -m app.workers.analytics_consumer
     volumes:
       - ./app:/app/app
     env_file:
-      - .env
+      - path: .env
+        required: false
+      - path: .env.example
+        required: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,22 +96,32 @@ services:
     image: temporalio/auto-setup:latest
     ports:
       - "7233:7233"
-      - "8233:8233"
     environment:
       DB: postgres12
+      DB_PORT: 5432
       POSTGRES_SEEDS: postgres
-      POSTGRES_PORT: 5432
       POSTGRES_USER: appuser
-      POSTGRES_PASSWORD: apppassword
+      POSTGRES_PWD: apppassword
       POSTGRES_DB: appdb
       ENABLE_API: "true"
       ENABLE_UI: "true"
-      TEMPORAL_ADDRESS: 0.0.0.0:7233
+      TEMPORAL_ADDRESS: temporal:7233
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - temporal-data:/etc/temporal/data
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    ports:
+      - "8233:8080"
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_UI_PORT: 8080
+    depends_on:
+      temporal:
+        condition: service_started
 
   redis:
     image: redis:7-alpine

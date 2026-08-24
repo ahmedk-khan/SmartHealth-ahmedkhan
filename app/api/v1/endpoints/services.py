@@ -39,7 +39,7 @@ async def _start_local_publish_workflow(service_id: int, workflow_id: str) -> _L
 
         service_struct = await structure_service(published["service"])
         chunks = await chunk_service(service_struct)
-        await mark_published(service_id, chunks)
+        await mark_published({"service_id": service_id, "chunks": chunks})
         _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = ServiceStatus.PUBLISHED.value
         return _LocalWorkflowHandle(workflow_id)
     except Exception as exc:
@@ -58,6 +58,12 @@ async def _start_local_publish_workflow(service_id: int, workflow_id: str) -> _L
 def create_service(payload: ServiceCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     service = ServiceManagementService(db)
     return service.create_service(payload, current_user)
+
+
+@router.put("/{service_id}", response_model=ServiceRead)
+def update_service(service_id: int, payload: ServiceCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    service = ServiceManagementService(db)
+    return service.update_service(service_id, payload, current_user)
 
 
 @router.post(
@@ -100,5 +106,8 @@ async def publish_status(service_id: int, db: Session = Depends(get_db), current
 )
 def list_services(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     service = ServiceManagementService(db)
-    items, total = service.repository.list_published(offset=offset, limit=limit)
+    if current_user.role in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+        items, total = service.repository.list_all(offset=offset, limit=limit)
+    else:
+        items, total = service.repository.list_published(offset=offset, limit=limit)
     return {"items": items, "total": total, "limit": limit, "offset": offset}

@@ -11,8 +11,11 @@ class ContentChunkRepository(BaseRepository):
             [
                 ContentChunk(
                     service_id=service_id,
+                    source_type=chunk.get("source_type", "service"),
+                    source_id=chunk.get("source_id", service_id),
                     chunk_index=chunk["chunk_index"],
                     content=chunk["content"],
+                    token_count=chunk.get("token_count", len(chunk["content"].split())),
                     embedding=chunk["embedding"],
                 )
                 for chunk in chunks

@@ -100,16 +100,7 @@ def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
             exc_info=True
         )
         
-        failed_service = FailedJobService(db)
-        failed_service.record_failure(
-            task_name=self.name,
-            task_id=self.request.id,
-            exc=exc,
-            payload={"appointment_id": appointment_id},
-            traceback_text=traceback.format_exc(),
-        )
-        
-        if isinstance(exc, (ConnectionError, TimeoutError)):
+        if isinstance(exc, (ConnectionError, TimeoutError)) and self.request.retries < self.max_retries:
             logger.info(
                 "Retrying appointment reminder task",
                 extra={
@@ -119,6 +110,14 @@ def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
                 }
             )
             raise self.retry(exc=exc, countdown=30)
+        failed_service = FailedJobService(db)
+        failed_service.record_failure(
+            task_name=self.name,
+            task_id=self.request.id,
+            exc=exc,
+            payload={"appointment_id": appointment_id},
+            traceback_text=traceback.format_exc(),
+        )
         raise
     finally:
         db.close()

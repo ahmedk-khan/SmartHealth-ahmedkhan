@@ -8,6 +8,8 @@ from app.db import Base
 
 
 class AppointmentStatus(str, Enum):
+    REQUESTED = "REQUESTED"
+    SLOT_RESERVED = "SLOT_RESERVED"
     PENDING = "PENDING"
     CONFIRMED = "CONFIRMED"
     CANCELLED = "CANCELLED"
@@ -29,7 +31,7 @@ class Appointment(Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False)
     service_id = Column(Integer, ForeignKey("services.id"), nullable=False)
-    slot_id = Column(Integer, ForeignKey("slots.id"), nullable=False, unique=True)
+    slot_id = Column(Integer, ForeignKey("slots.id"), nullable=False)
     status = Column(SAEnum(AppointmentStatus), nullable=False, default=AppointmentStatus.PENDING)
     visit_status = Column(SAEnum(VisitStatus), nullable=False, default=VisitStatus.NOT_STARTED)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)

@@ -44,12 +44,14 @@ class ReadinessResponse(BaseModel):
     checks: dict[str, str] = Field(
         ...,
         description="Per-dependency check results: values are 'ok', 'disabled', or 'error: <exception_type>'.",
-        examples={
-            "database": "ok",
-            "redis": "ok",
-            "kafka": "disabled",
-            "temporal": "error: RuntimeError",
-        },
+        examples=[
+            {
+                "database": "ok",
+                "redis": "ok",
+                "kafka": "disabled",
+                "temporal": "error: RuntimeError",
+            }
+        ],
     )
 
 
@@ -162,7 +164,7 @@ async def ready():
                 temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace),
                 timeout=5,
             )
-            await asyncio.wait_for(client.get_workflow_handle("health-check-readiness"), timeout=1)
+            client.get_workflow_handle("health-check-readiness")
             checks["temporal"] = "ok"
         except Exception as exc:  # pragma: no cover - runtime dependency check
             checks["temporal"] = f"error: {type(exc).__name__}"

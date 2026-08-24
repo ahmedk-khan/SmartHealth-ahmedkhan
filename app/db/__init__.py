@@ -10,7 +10,9 @@ Base = declarative_base()
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
+    if engine.dialect.name != "postgresql":
+        Base.metadata.create_all(bind=engine)
+        return
 
     inspector = inspect(engine)
     try:

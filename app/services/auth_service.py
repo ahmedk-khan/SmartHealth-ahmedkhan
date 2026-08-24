@@ -3,8 +3,9 @@ from fastapi import status
 from app.core.exceptions import AppError
 from app.core.metrics import record_login_attempt, record_user_registration
 from app.core.security import create_access_token, get_password_hash, verify_password
+from app.core.settings import settings
 from app.repositories import AuthRepository
-from app.schemas.user import Token, UserCreate, UserLogin, UserRead
+from app.schemas.user import Token, UserCreate, UserLogin, UserRead, UserRole
 from app.services.base import BaseService
 
 
@@ -18,6 +19,18 @@ class AuthService(BaseService):
     def register(self, user_in: UserCreate) -> UserRead:
         """Register a new user with logging and metrics."""
         self.log_info("User registration attempt", operation="register", data={"email": "[REDACTED]"})
+
+        if user_in.role == UserRole.admin and not settings.allow_self_service_admin_registration:
+            self.log_warning(
+                "Registration failed: admin self-service is disabled",
+                operation="register",
+                data={"role": user_in.role},
+            )
+            raise AppError(
+                "Admin registration is disabled. An existing admin must create the account.",
+                status_code=status.HTTP_403_FORBIDDEN,
+                error_type="admin_registration_disabled",
+            )
         
         existing = self.repository.get_user_by_email(user_in.email)
         if existing:
@@ -28,6 +41,8 @@ class AuthService(BaseService):
             email=user_in.email,
             hashed_password=get_password_hash(user_in.password),
             role=user_in.role,
+            first_name=user_in.first_name,
+            last_name=user_in.last_name,
         )
         
         self.log_info("User registered successfully", operation="register", data={"user_id": user.id, "role": user.role})

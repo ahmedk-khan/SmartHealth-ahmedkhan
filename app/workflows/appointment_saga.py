@@ -1,15 +1,22 @@
 import datetime
 import logging
+import uuid
 from datetime import timedelta
 from typing import Any
 
 from temporalio import activity, workflow
+from temporalio import client as temporal_client
+from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app import db as db_module
 from app.core.exceptions import AppError
 from app.models import Appointment, AppointmentStatus, AppointmentStatusHistory, Billing, BillingStatus, Patient, Slot, SlotStatus
+from app.repositories.slots import SlotRepository
 from app.workflows.temporal_logging import setup_activity_context, log_activity_step, log_activity_error
+from app.core.settings import settings
+from app.services.billing_checker import BillingChecker
 
 
 logger = logging.getLogger(__name__)
@@ -65,22 +72,20 @@ async def reserve_slot(appointment_data: dict[str, Any]) -> dict[str, Any]:
     setup_activity_context(appointment_data, "reserve_slot")
     
     db: Session = db_module.SessionLocal()
+    appointment_id: int | None = None
     try:
         log_activity_step("Fetching slot for reservation", {"slot_id": appointment_data.get("slot_id")})
         slot = db.query(Slot).filter(Slot.id == appointment_data["slot_id"]).first()
         if not slot:
             raise AppError("Slot not found", status_code=404, error_type="not_found")
-        if slot.status != SlotStatus.AVAILABLE:
-            raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
 
-        log_activity_step("Updating slot status", {"slot_id": slot.id, "status": "RESERVED"})
-        slot.status = SlotStatus.RESERVED
-        slot.patient_id = appointment_data["patient_id"]
-        slot.updated_at = datetime.datetime.now(datetime.timezone.utc)
-        db.commit()
+        log_activity_step("Atomically reserving slot", {"slot_id": slot.id, "status": "RESERVED"})
+        reserved = SlotRepository(db).reserve_for_patient(slot.id, appointment_data["patient_id"])
+        if reserved is None:
+            raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
         
-        logger.info("Slot reserved successfully", extra={"slot_id": slot.id, "patient_id": slot.patient_id})
-        return {"slot_id": slot.id, "patient_id": slot.patient_id}
+        logger.info("Slot reserved successfully", extra={"slot_id": reserved.id, "patient_id": reserved.patient_id})
+        return {"slot_id": reserved.id, "patient_id": reserved.patient_id}
     except AppError as exc:
         log_activity_error("reserve_slot", exc)
         raise
@@ -106,18 +111,68 @@ async def run_billing_precheck(appointment_data: dict[str, Any]) -> dict[str, An
         existing = db.query(Billing).filter(Billing.appointment_id == appointment_data["appointment_id"]).first()
         if existing:
             logger.info("Billing record already exists", extra={"appointment_id": appointment_data["appointment_id"], "status": existing.status.value})
+            if existing.status != BillingStatus.APPROVED:
+                raise AppError("Billing pre-check declined", status_code=402, error_type="billing_declined")
             return {"status": existing.status.value, "amount": float(existing.amount)}
 
-        log_activity_step("Creating new billing record", {"appointment_id": appointment_data.get("appointment_id"), "amount": 50.0})
-        billing = Billing(appointment_id=appointment_data["appointment_id"], amount=50.0, status=BillingStatus.APPROVED)
-        db.add(billing)
-        db.commit()
+        try:
+            billing = BillingChecker(db).precheck(
+                appointment_data["appointment_id"],
+                force_failure=bool(appointment_data.get("force_billing_failure")),
+            )
+        except IntegrityError:
+            db.rollback()
+            billing = db.query(Billing).filter(Billing.appointment_id == appointment_data["appointment_id"]).first()
+            if billing is None:
+                raise
         
         logger.info("Billing precheck approved", extra={"appointment_id": billing.appointment_id, "amount": float(billing.amount)})
         return {"status": billing.status.value, "amount": float(billing.amount)}
     except Exception as exc:
         log_activity_error("run_billing_precheck", exc)
         raise
+    finally:
+        db.close()
+
+
+@activity.defn
+async def create_pending_appointment(appointment_data: dict[str, Any]) -> dict[str, Any]:
+    setup_activity_context(appointment_data, "create_pending_appointment")
+    db: Session = db_module.SessionLocal()
+    try:
+        appointment = Appointment(
+            patient_id=appointment_data["patient_id"],
+            provider_id=appointment_data["provider_id"],
+            service_id=appointment_data["service_id"],
+            slot_id=appointment_data["slot_id"],
+            status=AppointmentStatus.REQUESTED,
+        )
+        db.add(appointment)
+        db.flush()
+        db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
+        from app.models.audit import AuditLog
+        db.add(AuditLog(entity_type="appointment", entity_id=appointment.id, action="requested", after={"status": appointment.status.value}))
+        db.commit()
+        return {"appointment_id": appointment.id}
+    finally:
+        db.close()
+
+
+@activity.defn
+async def mark_slot_reserved(appointment_data: dict[str, Any]) -> dict[str, Any]:
+    db: Session = db_module.SessionLocal()
+    try:
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_data["appointment_id"]).first()
+        if not appointment:
+            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+        if appointment.status == AppointmentStatus.REQUESTED:
+            appointment.status = AppointmentStatus.SLOT_RESERVED
+            appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
+            db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
+            from app.models.audit import AuditLog
+            db.add(AuditLog(entity_type="appointment", entity_id=appointment.id, action="slot_reserved", after={"status": appointment.status.value}))
+            db.commit()
+        return {"status": appointment.status.value}
     finally:
         db.close()
 
@@ -162,6 +217,8 @@ async def confirm_appointment(appointment_data: dict[str, Any]) -> dict[str, Any
         appointment.status = AppointmentStatus.CONFIRMED
         appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
         db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
+        from app.models.audit import AuditLog
+        db.add(AuditLog(entity_type="appointment", entity_id=appointment.id, action="confirmed", after={"status": appointment.status.value}))
         db.commit()
         
         logger.info("Appointment confirmed", extra={"appointment_id": appointment.id, "status": appointment.status.value})
@@ -203,6 +260,25 @@ async def release_slot(appointment_data: dict[str, Any]) -> dict[str, Any]:
         db.close()
 
 
+@activity.defn
+async def cancel_pending_appointment(appointment_data: dict[str, Any]) -> dict[str, Any]:
+    setup_activity_context(appointment_data, "cancel_pending_appointment")
+    db: Session = db_module.SessionLocal()
+    try:
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_data["appointment_id"]).first()
+        if appointment and appointment.status in {AppointmentStatus.REQUESTED, AppointmentStatus.SLOT_RESERVED, AppointmentStatus.PENDING}:
+            appointment.status = AppointmentStatus.CANCELLED
+            appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
+            db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
+            from app.models.audit import AuditLog
+            db.add(AuditLog(entity_type="appointment", entity_id=appointment.id, action="compensated", after={"status": appointment.status.value}))
+            db.commit()
+        return {"appointment_cancelled": appointment is not None}
+    finally:
+        db.close()
+
+
+@workflow.defn
 class AppointmentSagaWorkflow:
     @workflow.run
     async def run(self, appointment_data: dict[str, Any]) -> dict[str, Any]:
@@ -238,24 +314,13 @@ class AppointmentSagaWorkflow:
             start_to_close_timeout=timedelta(seconds=30),
         )
 
-        db: Session = db_module.SessionLocal()
-        try:
-            appointment = Appointment(
-                patient_id=validated["patient_id"],
-                provider_id=validated["provider_id"],
-                service_id=validated["service_id"],
-                slot_id=validated["slot_id"],
-                status=AppointmentStatus.PENDING,
-            )
-            db.add(appointment)
-            db.flush()
-            db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
-            db.commit()
-            db.refresh(appointment)
-            appointment_id = appointment.id
-            logger.info("Appointment record created", extra={"appointment_id": appointment_id})
-        finally:
-            db.close()
+        created = await workflow.execute_activity(
+            create_pending_appointment,
+            {**appointment_data, **validated},
+            start_to_close_timeout=timedelta(seconds=30),
+        )
+        appointment_id = created["appointment_id"]
+        await workflow.execute_activity(mark_slot_reserved, {**appointment_data, "appointment_id": appointment_id}, start_to_close_timeout=timedelta(seconds=30))
 
         try:
             await workflow.execute_activity(
@@ -282,6 +347,11 @@ class AppointmentSagaWorkflow:
                 {**appointment_data, "slot_id": validated["slot_id"]},
                 start_to_close_timeout=timedelta(seconds=30),
             )
+            await workflow.execute_activity(
+                cancel_pending_appointment,
+                {**appointment_data, "appointment_id": appointment_id},
+                start_to_close_timeout=timedelta(seconds=30),
+            )
             raise
 
 
@@ -297,6 +367,7 @@ async def _run_appointment_saga_locally(appointment_data: dict[str, Any]) -> dic
     await reserve_slot({**appointment_data, **validated})
 
     db: Session = db_module.SessionLocal()
+    appointment_id: int | None = None
     try:
         if appointment_data.get("force_failure"):
             raise RuntimeError("Simulated saga failure")
@@ -306,17 +377,22 @@ async def _run_appointment_saga_locally(appointment_data: dict[str, Any]) -> dic
             provider_id=validated["provider_id"],
             service_id=validated["service_id"],
             slot_id=validated["slot_id"],
-            status=AppointmentStatus.PENDING,
+            status=AppointmentStatus.REQUESTED,
         )
         db.add(appointment)
         db.flush()
         db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
+        from app.models.audit import AuditLog
+        db.add(AuditLog(entity_type="appointment", entity_id=appointment.id, action="requested", after={"status": appointment.status.value}))
         db.commit()
         db.refresh(appointment)
         appointment_id = appointment.id
         logger.info("Appointment record created (local)", extra={"appointment_id": appointment_id})
+        await mark_slot_reserved({**appointment_data, "appointment_id": appointment_id})
     except Exception:
         await release_slot({**appointment_data, "slot_id": validated["slot_id"]})
+        if appointment_id is not None:
+            await cancel_pending_appointment({**appointment_data, "appointment_id": appointment_id})
         raise
     finally:
         db.close()
@@ -329,11 +405,26 @@ async def _run_appointment_saga_locally(appointment_data: dict[str, Any]) -> dic
         return {"workflow_status": "CONFIRMED", "appointment_id": appointment_id}
     except Exception:
         await release_slot({**appointment_data, "slot_id": validated["slot_id"]})
+        await cancel_pending_appointment({**appointment_data, "appointment_id": appointment_id})
         raise
 
 
 async def run_appointment_saga(appointment_data: dict[str, Any]) -> dict[str, Any]:
+    if settings.app_env == "local":
+        return await _run_appointment_saga_locally(appointment_data)
+
     try:
-        return await AppointmentSagaWorkflow().run(appointment_data)
+        client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
     except Exception:
         return await _run_appointment_saga_locally(appointment_data)
+
+    workflow_id = appointment_data.get("workflow_id") or f"appointment-booking-{appointment_data['patient_id']}-{appointment_data['slot_id']}-{uuid.uuid4()}"
+    handle = await client.start_workflow(
+        AppointmentSagaWorkflow.run,
+        {**appointment_data, "workflow_id": workflow_id},
+        id=workflow_id,
+        task_queue=settings.temporal_task_queue,
+        id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+        id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
+    )
+    return await handle.result()

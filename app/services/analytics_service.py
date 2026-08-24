@@ -54,19 +54,17 @@ class AnalyticsService(BaseService):
         return int(value)
 
     def get_dashboard_metrics(self) -> dict[str, int | float]:
-        appointments_total = self._aggregate_metric("appointment.created")
-        cancelled_appointments_total = self._aggregate_metric("appointment.cancelled")
-        completed_visits_total = self._aggregate_metric("visit.completed", visit_status="COMPLETED")
-        published_services_total = self._aggregate_service_metric("service.published")
-        patients_total = (
-            self.db.query(func.coalesce(func.count(func.distinct(AnalyticsAppointmentDaily.patient_id)), 0))
-            .filter(
-                AnalyticsAppointmentDaily.event_type == "appointment.created",
-                AnalyticsAppointmentDaily.patient_id.isnot(None),
-            )
-            .scalar()
-            or 0
-        )
+        appointments_total = self.db.query(func.count(Appointment.id)).scalar() or 0
+        cancelled_appointments_total = self.db.query(func.count(Appointment.id)).filter(
+            Appointment.status == AppointmentStatus.CANCELLED,
+        ).scalar() or 0
+        completed_visits_total = self.db.query(func.count(Appointment.id)).filter(
+            Appointment.visit_status == VisitStatus.COMPLETED,
+        ).scalar() or 0
+        published_services_total = self.db.query(func.count(Service.id)).filter(
+            Service.is_published.is_(True),
+        ).scalar() or 0
+        patients_total = self.db.query(func.count(Patient.id)).scalar() or 0
         billing_total = self.db.query(func.coalesce(func.sum(Billing.amount), 0)).scalar() or 0
 
         return {

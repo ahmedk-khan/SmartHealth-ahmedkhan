@@ -21,6 +21,7 @@ class ServiceStatus(str, Enum):
     PUBLISHED = "PUBLISHED"
     UNPUBLISHING = "UNPUBLISHING"
     UNPUBLISHED = "UNPUBLISHED"
+    PUBLISH_FAILED = "PUBLISH_FAILED"
 
 
 class Service(Base):

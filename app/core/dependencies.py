@@ -9,7 +9,7 @@ from app.core.exceptions import AppError
 from app.core.security import decode_access_token
 from app.models import User
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -25,7 +25,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user_id = payload.get("sub")
     if user_id is None:
         raise AppError("Invalid authentication credentials", status_code=401, error_type="invalid_token")
-    user = db.query(User).filter(User.id == int(user_id)).first()
+    try:
+        user = db.query(User).filter(User.id == int(user_id)).first()
+    except (TypeError, ValueError) as exc:
+        raise AppError("Invalid authentication credentials", status_code=401, error_type="invalid_token") from exc
     if not user:
         raise AppError("User not found", status_code=401, error_type="user_not_found")
     return user

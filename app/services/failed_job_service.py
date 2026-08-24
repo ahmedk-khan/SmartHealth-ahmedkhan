@@ -6,6 +6,7 @@ from app.services.base import BaseService
 
 class FailedJobService(BaseService):
     def record_failure(self, task_name: str, task_id: str | None, exc: BaseException, payload: dict | None = None, traceback_text: str | None = None) -> FailedJob:
+        self.db.rollback()
         failed_job = FailedJob(
             task_name=task_name,
             task_id=task_id,

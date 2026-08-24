@@ -1,18 +1,30 @@
 import datetime
 
-from sqlalchemy.orm import Session
-
 from app.models import Patient, Provider, Service, Slot, SlotStatus
 from app.repositories.base import BaseRepository
 
 
 class SlotRepository(BaseRepository):
+    def update_slot(self, slot: Slot, data: dict) -> Slot:
+        for field in ("service_id", "start_datetime", "end_datetime"):
+            if field in data:
+                setattr(slot, field, data[field])
+        self.db.commit()
+        self.db.refresh(slot)
+        return slot
+
+    def delete_slot(self, slot: Slot) -> None:
+        self.db.delete(slot)
+        self.db.commit()
+
     def get_by_id(self, slot_id: int) -> Slot | None:
         return self.db.query(Slot).filter(Slot.id == slot_id).first()
 
     def create_slot(self, data: dict) -> Slot:
         slot = Slot(**data)
         self.db.add(slot)
+        self.db.flush()
+        self.audit("slot", slot.id, "created", after={"status": slot.status.value, "provider_id": slot.provider_id, "service_id": slot.service_id})
         self.db.commit()
         self.db.refresh(slot)
         return slot

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from app.integrations.kafka_client import KafkaEventPublisher
+from app import db as db_module
+from app.integrations.kafka_client import KafkaEventPublisher, KafkaProducerError
 from app.core.logging import get_correlation_id, get_request_id
 
 
@@ -18,6 +19,19 @@ class HealthcareEventService:
     
     def __init__(self, publisher: KafkaEventPublisher | None = None) -> None:
         self.publisher = publisher or KafkaEventPublisher()
+
+    @staticmethod
+    def _save_outbox(event_type: str, entity_type: str, entity_id: int, payload: dict[str, object], error: str) -> None:
+        db = db_module.SessionLocal()
+        try:
+            from app.models.outbox import OutboxEvent
+            db.add(OutboxEvent(event_type=event_type, entity_type=entity_type, entity_id=str(entity_id), payload=payload, last_error=error))
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to persist event to outbox", extra={"event_type": event_type, "entity_id": entity_id})
+        finally:
+            db.close()
 
     def publish_appointment_event(
         self,
@@ -79,12 +93,17 @@ class HealthcareEventService:
             "workflow_id": workflow_id,
         }
         
-        result = self.publisher.publish_event(
-            event_type=event_type,
-            entity_type="appointment",
-            entity_id=appointment_id,
-            **metadata,
-        )
+        try:
+            result = self.publisher.publish_event(
+                event_type=event_type,
+                entity_type="appointment",
+                entity_id=appointment_id,
+                **metadata,
+            )
+        except KafkaProducerError as exc:
+            logger.error("Appointment event delivery failed after commit: %s", exc, extra={"event_type": event_type, "appointment_id": appointment_id})
+            self._save_outbox(event_type, "appointment", appointment_id, metadata, str(exc))
+            return {"status": "delivery_failed", "event_type": event_type, "entity_id": str(appointment_id)}
         
         logger.info(
             f"Appointment event published: {event_type}",
@@ -135,12 +154,17 @@ class HealthcareEventService:
             "correlation_id": resolved_correlation_id,
         }
         
-        result = self.publisher.publish_event(
-            event_type=event_type,
-            entity_type="service",
-            entity_id=service_id,
-            **metadata,
-        )
+        try:
+            result = self.publisher.publish_event(
+                event_type=event_type,
+                entity_type="service",
+                entity_id=service_id,
+                **metadata,
+            )
+        except KafkaProducerError as exc:
+            logger.error("Service event delivery failed after commit: %s", exc, extra={"event_type": event_type, "service_id": service_id})
+            self._save_outbox(event_type, "service", service_id, metadata, str(exc))
+            return {"status": "delivery_failed", "event_type": event_type, "entity_id": str(service_id)}
         
         logger.info(
             f"Service event published: {event_type}",
@@ -154,3 +178,27 @@ class HealthcareEventService:
         )
         
         return result
+
+    def publish_resource_event(self, event_type: str, *, entity_type: str, entity_id: int, **metadata: object) -> dict[str, object]:
+        try:
+            return self.publisher.publish_event(
+                event_type=event_type,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                **metadata,
+            )
+        except KafkaProducerError as exc:
+            logger.error("Resource event delivery failed after commit: %s", exc, extra={"event_type": event_type, "entity_type": entity_type, "entity_id": entity_id})
+            self._save_outbox(event_type, entity_type, entity_id, metadata, str(exc))
+            return {"status": "delivery_failed", "event_type": event_type, "entity_id": str(entity_id)}
+
+    def publish_billing_event(self, event_type: str, *, billing_id: int, appointment_id: int, amount: float, status: str) -> dict[str, object]:
+        return self.publish_resource_event(
+            event_type,
+            entity_type="billing",
+            entity_id=billing_id,
+            billing_id=billing_id,
+            appointment_id=appointment_id,
+            amount=amount,
+            status=status,
+        )

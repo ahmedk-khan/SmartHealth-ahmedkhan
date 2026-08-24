@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     embedding_dimensions: int = Field(default=384, alias="EMBEDDING_DIMENSIONS")
     retrieval_top_k: int = Field(default=5, alias="RETRIEVAL_TOP_K")
     retrieval_min_similarity: float = Field(default=0.65, alias="RETRIEVAL_MIN_SIMILARITY")
+    allow_self_service_admin_registration: bool = Field(default=False, alias="ALLOW_SELF_SERVICE_ADMIN_REGISTRATION")
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(extra="ignore")
 
 
 settings = Settings()

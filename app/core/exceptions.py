@@ -3,6 +3,7 @@ import logging
 import uuid
 
 from fastapi import Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -57,7 +58,7 @@ def validation_exception_handler(request: Request, exc: RequestValidationError) 
     request_id = getattr(request.state, "request_id", None)
     return JSONResponse(
         status_code=422,
-        content=format_error_payload("validation_error", "Request validation failed", exc.errors(), request_id=request_id),
+        content=format_error_payload("validation_error", "Request validation failed", jsonable_encoder(exc.errors()), request_id=request_id),
     )
 
 

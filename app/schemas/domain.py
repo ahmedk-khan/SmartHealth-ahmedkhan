@@ -25,12 +25,20 @@ class DepartmentRead(DepartmentBase):
 
 
 class ProviderBase(BaseModel):
+    user_id: Optional[int] = None
     bio: Optional[str] = None
+    specialty: Optional[str] = None
     department_id: Optional[int] = None
 
 
 class ProviderCreate(ProviderBase):
     pass
+
+
+class ProviderUpdate(BaseModel):
+    bio: Optional[str] = None
+    specialty: Optional[str] = None
+    department_id: Optional[int] = None
 
 
 class ProviderRead(ProviderBase):
@@ -48,6 +56,7 @@ class ServiceStatus(str, Enum):
     PUBLISHED = "PUBLISHED"
     UNPUBLISHING = "UNPUBLISHING"
     UNPUBLISHED = "UNPUBLISHED"
+    PUBLISH_FAILED = "PUBLISH_FAILED"
 
 
 class ServiceBase(BaseModel):
@@ -101,6 +110,8 @@ class SlotRead(SlotBase):
 
 
 class AppointmentStatus(str, Enum):
+    REQUESTED = "REQUESTED"
+    SLOT_RESERVED = "SLOT_RESERVED"
     PENDING = "PENDING"
     CONFIRMED = "CONFIRMED"
     CANCELLED = "CANCELLED"
@@ -134,6 +145,16 @@ class AppointmentRead(AppointmentBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WaitlistEntryRead(BaseModel):
+    id: int
+    slot_id: int
+    patient_id: int
+    status: str
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -179,9 +200,15 @@ class PatientCreate(PatientBase):
     pass
 
 
+class PatientUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+
+
 class PatientRead(PatientBase):
     id: int
     user_id: int
+    email: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

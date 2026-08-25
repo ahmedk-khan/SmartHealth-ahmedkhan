@@ -23,11 +23,36 @@ Preparation instructions: <instructions or Not specified>
 
 The description is then split into 120-character segments and appended to that context. Repeating the context in each chunk prevents retrieval results from losing the service identity or preparation guidance when only one chunk is returned. Chunks are embedded with the configured 384-dimensional model and stored in the `content_chunks.embedding` pgvector column.
 
+Each indexed chunk also stores `service_id`, `department`, `specialty`, `published`, and a SHA-256 `content_hash`. The hash is calculated from the final chunk text, including the labeled context. During publication, the embedding Activity looks up existing rows by service, chunk index, and hash. Unchanged chunks reuse their stored vector; only new or changed chunks are sent to the provider. Provider calls are bounded by `EMBEDDING_BATCH_SIZE` and retried by Temporal using the configured Activity retry policy.
+
+Persistence is handled by `ContentChunkRepository`, not by the embedding provider. Re-indexing replaces all chunks for the service before the service is marked published. The unique `(service_id, chunk_index)` constraint and replacement behavior remove stale chunks and prevent duplicate indexes. Existing rows created before hash support are embedded once on their next publication and then receive a hash.
+
 ## Service Search
 
-`POST /search` and `POST /api/v1/search` accept `{"query": "...", "limit": 5}` and require authentication. They return published services ranked by cosine similarity, with `service_id`, `service_name`, `score`, `department`, `specialty`, and the best matching chunk content. Results below `RETRIEVAL_MIN_SIMILARITY` are omitted, and only the highest-scoring chunk per service is returned.
+`POST /search` and `POST /api/v1/search` accept `{"query": "...", "limit": 5}` and require authentication. The endpoint caps the requested limit at `RETRIEVAL_TOP_K`, ranks candidates by cosine similarity, and omits results below `RETRIEVAL_MIN_SIMILARITY`. Only the highest-scoring chunk per service is returned.
+
+Search requires both the stored chunk flag `published=true` and the live service flag `is_published=true`. This prevents stale or unpublished vectors from being returned after catalog changes. Results contain only approved service-catalog fields: `service_id`, `service_name`, `score`, `department`, `specialty`, and chunk content. Patient, appointment, billing, authentication, and other PHI-bearing tables are not joined or returned. Authentication is enforced by the API dependency, while service filtering is enforced in the repository layer.
 
 When `EMBEDDING_API_KEY` is unset, local development uses a deterministic token-based embedding so workflows and tests remain runnable. Production deployments should configure the selected embedding provider and key.
+
+## Retrieval Evaluation
+
+The checked-in evaluation set at `evaluation/retrieval_eval.json` contains 10 query and expected-service pairs. Run it with:
+
+```bash
+python scripts/eval_retrieval.py --limit 5
+```
+
+The script reports `top_k`, the active similarity `threshold`, total cases, hits, hit rate, and per-case results. A hit means the expected service name or ID appears in the returned top-k results. The result is corpus-dependent: run it after services are published and vectors are indexed, and record the output when changing the model, threshold, chunking, or service corpus.
+
+The evaluation harness is committed and ready, but no reproducible hit-rate number is recorded in this development checkout because its local SQLite database has no indexed `content_chunks` corpus. The honest baseline/current status is:
+
+| Run | Corpus state | Result |
+| --- | --- | --- |
+| Before retrieval safeguards | Not captured | Not comparable |
+| Current implementation | Dataset committed; local corpus unavailable | Run the command above after migration and publication |
+
+Do not treat a missing corpus or an empty result as a zero-quality model. Run the evaluation against the same published corpus before and after any model, threshold, or chunking change.
 
 Further reading:
 

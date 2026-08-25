@@ -18,4 +18,8 @@ async def search_services_endpoint(
 ):
     del current_user
     results = await search_services(db, payload.query, min(payload.limit, settings.retrieval_top_k))
-    return {"query": payload.query, "results": results}
+    return {
+        "query": payload.query,
+        "results": results,
+        "message": "We don't offer a matching service." if not results else None,
+    }

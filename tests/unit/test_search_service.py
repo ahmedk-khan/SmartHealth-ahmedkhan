@@ -57,6 +57,10 @@ def test_search_applies_top_k_threshold_and_published_scope(monkeypatch):
         assert [result["service_name"] for result in results] == ["Exact", "Partial"]
         assert results[0]["department"] == department.name
         assert results[0]["specialty"] == "Cardiac"
+        assert not {"patient_id", "appointment_id", "billing_id"}.intersection(results[0])
+
+        monkeypatch.setattr(settings, "retrieval_min_similarity", 1.01)
+        assert asyncio.run(search_service.search_services(session, "unrelated", 2)) == []
     finally:
         session.close()
         Base.metadata.drop_all(bind=engine)

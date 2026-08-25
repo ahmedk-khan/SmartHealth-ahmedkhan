@@ -1,5 +1,6 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import model_validator
 
 
 class Settings(BaseSettings):
@@ -18,6 +19,7 @@ class Settings(BaseSettings):
     celery_broker_url: str = Field(default="redis://localhost:6379/1", alias="CELERY_BROKER_URL")
     celery_result_backend: str = Field(default="redis://localhost:6379/2", alias="CELERY_RESULT_BACKEND")
     celery_task_always_eager: bool = Field(default=False, alias="CELERY_TASK_ALWAYS_EAGER")
+    billing_force_failure: bool = Field(default=False, alias="BILLING_FORCE_FAILURE")
     kafka_enabled: bool = Field(default=False, alias="KAFKA_ENABLED")
     kafka_bootstrap_servers: str = Field(default="localhost:9092", alias="KAFKA_BOOTSTRAP_SERVERS")
     kafka_consumer_group: str = Field(default="app-analytics", alias="KAFKA_CONSUMER_GROUP")
@@ -30,6 +32,12 @@ class Settings(BaseSettings):
     retrieval_top_k: int = Field(default=5, alias="RETRIEVAL_TOP_K")
     retrieval_min_similarity: float = Field(default=0.65, alias="RETRIEVAL_MIN_SIMILARITY")
     allow_self_service_admin_registration: bool = Field(default=False, alias="ALLOW_SELF_SERVICE_ADMIN_REGISTRATION")
+
+    @model_validator(mode="after")
+    def validate_production_security(self):
+        if self.app_env.lower() in {"production", "prod"} and self.jwt_secret in {"change-me-locally", "change-me-in-development"}:
+            raise ValueError("JWT_SECRET must be changed in production")
+        return self
 
     model_config = SettingsConfigDict(extra="ignore")
 

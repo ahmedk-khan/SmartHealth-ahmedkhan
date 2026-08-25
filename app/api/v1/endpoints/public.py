@@ -16,8 +16,5 @@ router = APIRouter(prefix="/public", tags=["public"])
 )
 def public_services(search: str | None = None, department_id: int | None = None, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
     repository = ServiceRepository(db)
-    items, total = repository.list_published(offset=offset, limit=limit, search=search)
-    if department_id is not None:
-        items = [service for service in items if service.department_id == department_id]
-        total = len(items)
+    items, total = repository.list_published(offset=offset, limit=limit, search=search, department_id=department_id)
     return {"items": items, "total": total, "limit": limit, "offset": offset}

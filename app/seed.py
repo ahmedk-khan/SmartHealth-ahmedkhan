@@ -2,7 +2,11 @@ from datetime import datetime, timedelta, timezone
 #seed 
 from app.db import SessionLocal
 from app.models import Department, Patient, Provider, Service, Slot, SlotStatus, User, UserRole
+from app.models import ContentChunk
 from app.core.security import get_password_hash
+from app.services.embedding_service import generate_embeddings
+import asyncio
+import hashlib
 
 
 def seed() -> None:
@@ -56,6 +60,32 @@ def seed() -> None:
             db.add(service)
             db.commit()
             db.refresh(service)
+
+        if service.is_published and not db.query(ContentChunk).filter(ContentChunk.service_id == service.id).count():
+            content = "\n".join((service.description or "", service.preparation_instructions or ""))
+            chunks = [content[index : index + 120] for index in range(0, max(len(content), 1), 120)]
+            embeddings = asyncio.run(generate_embeddings(chunks))
+            db.add_all([
+                ContentChunk(
+                    service_id=service.id,
+                    department=department.name,
+                    specialty=service.specialty,
+                    published=True,
+                    source_type="service",
+                    source_id=service.id,
+                    chunk_index=index,
+                    content=chunk,
+                    content_hash=hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
+                    token_count=len(chunk.split()),
+                    embedding=embedding,
+                )
+                for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+            ])
+            db.commit()
+
+        missing_chunks = db.query(Service.id).filter(Service.is_published.is_(True), ~Service.content_chunks.any()).all()
+        if missing_chunks:
+            raise RuntimeError(f"Published services without content chunks: {[service_id for service_id, in missing_chunks]}")
 
         patient_profile = db.query(Patient).filter(Patient.user_id == patient.id).first()
         if not patient_profile:

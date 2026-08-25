@@ -25,6 +25,16 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     task_always_eager=settings.celery_task_always_eager,
     task_eager_propagates=True,
+    beat_schedule={
+        "enqueue-due-appointment-reminders": {
+            "task": "app.workers.tasks.appointment_tasks.enqueue_due_appointment_reminders",
+            "schedule": 900.0,
+        },
+        "publish-pending-events": {
+            "task": "app.workers.tasks.outbox_tasks.publish_pending_events",
+            "schedule": 30.0,
+        },
+    },
 )
 
 logger = logging.getLogger(__name__)

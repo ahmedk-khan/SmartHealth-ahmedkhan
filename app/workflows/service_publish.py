@@ -165,7 +165,8 @@ async def mark_published(payload: dict[str, Any]) -> dict[str, Any]:
         if not service:
             raise AppError("Service not found", status_code=404, error_type="not_found")
         chunk_repository.replace_for_service(service.id, chunks)
-        service_repository.mark_published(service)
+        service_repository.mark_published(service, commit=False)
+        db.commit()
         from app.services.healthcare_event_service import HealthcareEventService
         HealthcareEventService().publish_service_event("service.published", service_id=service.id, department_id=service.department_id, status=service.status.value)
         return {"service_id": service.id, "published": True}

@@ -1,4 +1,4 @@
-from app.models import Patient, User, UserRole
+from app.models import Patient, Provider, User, UserRole
 from app.repositories.base import BaseRepository
 
 
@@ -14,6 +14,10 @@ class AuthRepository(BaseRepository):
             patient = self.db.query(Patient).filter(Patient.user_id == user.id).first()
             if patient is None:
                 self.db.add(Patient(user_id=user.id, first_name=first_name, last_name=last_name))
+        elif role == UserRole.provider:
+            provider = self.db.query(Provider).filter(Provider.user_id == user.id).first()
+            if provider is None:
+                self.db.add(Provider(user_id=user.id))
         self.db.commit()
         self.db.refresh(user)
         return user

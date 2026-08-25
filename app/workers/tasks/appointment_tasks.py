@@ -1,6 +1,7 @@
 import logging
 import time
 import traceback
+import datetime
 
 from app.celery_app import celery_app
 from app.core.exceptions import AppError
@@ -9,9 +10,28 @@ from app.core.metrics import record_celery_task
 from app.db import SessionLocal
 from app.services.failed_job_service import FailedJobService
 from app.services.notification_service import NotificationService
+from app.models import Appointment, AppointmentStatus, Slot
+from app.core.idempotency import idempotency_store
 
 
 logger = logging.getLogger(__name__)
+
+
+@celery_app.task(name="app.workers.tasks.appointment_tasks.enqueue_due_appointment_reminders")
+def enqueue_due_appointment_reminders() -> dict[str, int]:
+    db = SessionLocal()
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        due = db.query(Appointment).join(Slot).filter(
+            Appointment.status == AppointmentStatus.CONFIRMED,
+            Slot.start_datetime >= now,
+            Slot.start_datetime <= now + datetime.timedelta(hours=24),
+        ).all()
+        for appointment in due:
+            send_appointment_reminder.delay(appointment.id)
+        return {"enqueued": len(due)}
+    finally:
+        db.close()
 
 
 @celery_app.task(
@@ -53,6 +73,12 @@ def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
     db = SessionLocal()
     task_success = False
     try:
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).one_or_none()
+        if appointment is None:
+            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+        delivery_key = f"reminder:{appointment_id}:{appointment.slot.start_datetime.date().isoformat()}"
+        if not idempotency_store.claim(appointment.patient_id, delivery_key, ttl_seconds=172800):
+            return {"appointment_id": appointment_id, "status": "already_sent"}
         service = NotificationService(db)
         result = service.send_appointment_reminder(appointment_id)
         task_success = True

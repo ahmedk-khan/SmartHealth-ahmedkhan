@@ -37,6 +37,10 @@ _ALLOWED_EVENT_KEYS = {
     "status",
     "workflow_id",
     "version",
+    "data",
+    "scheduled_at",
+    "checked_in_at",
+    "wait_seconds",
 }
 
 _DENYLIST_KEYS = {
@@ -100,6 +104,17 @@ class KafkaEventPublisher:
 
     @staticmethod
     def _validate_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+        def sanitize(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    str(key): sanitize(item)
+                    for key, item in value.items()
+                    if str(key).lower() not in _DENYLIST_KEYS
+                }
+            if isinstance(value, list):
+                return [sanitize(item) for item in value]
+            return value
+
         safe_payload: dict[str, Any] = {}
         for key, value in metadata.items():
             if value is None:
@@ -109,7 +124,7 @@ class KafkaEventPublisher:
                 continue
             if normalized_key.lower() not in _ALLOWED_EVENT_KEYS:
                 continue
-            safe_payload[normalized_key] = value
+            safe_payload[normalized_key] = sanitize(value)
         return safe_payload
 
     def publish_event(
@@ -132,8 +147,9 @@ class KafkaEventPublisher:
             raise KafkaProducerError("Kafka event requires an event type, entity type, and entity id")
 
         normalized_metadata = self._validate_metadata(metadata)
+        event_id = normalized_metadata.pop("event_id", None) or str(uuid4())
         payload: dict[str, Any] = {
-            "event_id": str(uuid4()),
+            "event_id": event_id,
             "event_type": event_type,
             "occurred_at": datetime.now(timezone.utc).isoformat(),
             "source": "smarthealth-api",

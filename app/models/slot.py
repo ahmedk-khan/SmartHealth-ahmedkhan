@@ -18,10 +18,10 @@ class Slot(Base):
     __tablename__ = "slots"
 
     id = Column(Integer, primary_key=True, index=True)
-    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False)
+    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
     service_id = Column(Integer, ForeignKey("services.id"), nullable=False)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=True)
-    status = Column(SAEnum(SlotStatus), nullable=False, default=SlotStatus.AVAILABLE)
+    status = Column(SAEnum(SlotStatus), nullable=False, default=SlotStatus.AVAILABLE, index=True)
     start_datetime = Column(DateTime(timezone=True), nullable=False)
     end_datetime = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)

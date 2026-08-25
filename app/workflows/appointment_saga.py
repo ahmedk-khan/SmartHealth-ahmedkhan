@@ -114,7 +114,10 @@ async def run_billing_precheck(appointment_data: dict[str, Any]) -> dict[str, An
     db: Session = db_module.SessionLocal()
     try:
         log_activity_step("Checking existing billing", {"appointment_id": appointment_data.get("appointment_id")})
-        existing = db.query(Billing).filter(Billing.appointment_id == appointment_data["appointment_id"]).first()
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_data["appointment_id"]).first()
+        if not appointment:
+            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+        existing = db.query(Billing).filter(Billing.appointment_id == appointment.id).first()
         if existing:
             logger.info("Billing record already exists", extra={"appointment_id": appointment_data["appointment_id"], "status": existing.status.value})
             if existing.status != BillingStatus.APPROVED:
@@ -123,8 +126,9 @@ async def run_billing_precheck(appointment_data: dict[str, Any]) -> dict[str, An
 
         try:
             billing = BillingChecker(db).precheck(
-                appointment_data["appointment_id"],
-                force_failure=bool(appointment_data.get("force_billing_failure")),
+                appointment,
+                idempotency_key=appointment_data.get("idempotency_key"),
+                force_failure=appointment_data.get("force_billing_failure"),
             )
         except IntegrityError:
             db.rollback()
@@ -149,12 +153,18 @@ async def create_pending_appointment(appointment_data: dict[str, Any]) -> dict[s
     setup_activity_context(appointment_data, "create_pending_appointment")
     db: Session = db_module.SessionLocal()
     try:
+        booking_key = appointment_data.get("idempotency_key")
+        if booking_key:
+            existing = db.query(Appointment).filter(Appointment.booking_key == booking_key).first()
+            if existing:
+                return {"appointment_id": existing.id}
         appointment = Appointment(
             patient_id=appointment_data["patient_id"],
             provider_id=appointment_data["provider_id"],
             service_id=appointment_data["service_id"],
             slot_id=appointment_data["slot_id"],
             status=AppointmentStatus.REQUESTED,
+            booking_key=booking_key,
         )
         db.add(appointment)
         db.flush()
@@ -198,9 +208,28 @@ async def send_reminder(appointment_data: dict[str, Any]) -> dict[str, Any]:
     """
     setup_activity_context(appointment_data, "send_reminder")
     
-    log_activity_step("Sending appointment reminder", {"appointment_id": appointment_data.get("appointment_id")})
-    logger.info("Reminder sent", extra={"appointment_id": appointment_data.get("appointment_id")})
-    return {"sent": True, "appointment_id": appointment_data["appointment_id"]}
+    from app.services.notification_service import NotificationService
+    db = db_module.SessionLocal()
+    try:
+        notification = NotificationService(db).schedule_appointment_reminder(appointment_data["appointment_id"])
+        return {"sent": False, "appointment_id": appointment_data["appointment_id"], "notification_id": notification.id}
+    finally:
+        db.close()
+
+
+@activity.defn
+async def cancel_reminder(appointment_data: dict[str, Any]) -> dict[str, Any]:
+    setup_activity_context(appointment_data, "cancel_reminder")
+    notification_id = appointment_data.get("notification_id")
+    if notification_id is None:
+        return {"cancelled": True, "reason": "not_scheduled"}
+    db = db_module.SessionLocal()
+    try:
+        from app.services.notification_service import NotificationService
+        notification = NotificationService(db).cancel_notification(notification_id)
+        return {"cancelled": notification is None or notification.status.value == "CANCELLED", "notification_id": notification_id}
+    finally:
+        db.close()
 
 
 @activity.defn
@@ -351,7 +380,7 @@ class AppointmentSagaWorkflow:
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=BUSINESS_ACTIVITY_RETRY,
             )
-            await workflow.execute_activity(
+            reminder = await workflow.execute_activity(
                 send_reminder,
                 {**appointment_data, "appointment_id": appointment_id},
                 start_to_close_timeout=timedelta(seconds=30),
@@ -367,6 +396,12 @@ class AppointmentSagaWorkflow:
             return {"workflow_status": "CONFIRMED", "appointment_id": appointment_id}
         except Exception as exc:
             logger.error("Appointment saga workflow failed, releasing slot", extra={"appointment_id": appointment_id}, exc_info=True)
+            await workflow.execute_activity(
+                cancel_reminder,
+                {**appointment_data, "appointment_id": appointment_id, "notification_id": reminder.get("notification_id") if "reminder" in locals() else None},
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=COMPENSATION_RETRY,
+            )
             await workflow.execute_activity(
                 release_slot,
                 {**appointment_data, "appointment_id": appointment_id, "slot_id": validated["slot_id"]},
@@ -405,6 +440,7 @@ async def _run_appointment_saga_locally(appointment_data: dict[str, Any]) -> dic
             service_id=validated["service_id"],
             slot_id=validated["slot_id"],
             status=AppointmentStatus.REQUESTED,
+            booking_key=appointment_data.get("idempotency_key"),
         )
         db.add(appointment)
         db.flush()
@@ -426,11 +462,12 @@ async def _run_appointment_saga_locally(appointment_data: dict[str, Any]) -> dic
 
     try:
         await run_billing_precheck({**appointment_data, "appointment_id": appointment_id})
-        await send_reminder({**appointment_data, "appointment_id": appointment_id})
+        reminder = await send_reminder({**appointment_data, "appointment_id": appointment_id})
         await confirm_appointment({**appointment_data, "appointment_id": appointment_id})
         logger.info("Appointment saga completed locally", extra={"appointment_id": appointment_id})
         return {"workflow_status": "CONFIRMED", "appointment_id": appointment_id}
     except Exception:
+        await cancel_reminder({**appointment_data, "appointment_id": appointment_id, "notification_id": reminder.get("notification_id") if "reminder" in locals() else None})
         await release_slot({**appointment_data, "appointment_id": appointment_id, "slot_id": validated["slot_id"]})
         await cancel_pending_appointment({**appointment_data, "appointment_id": appointment_id})
         raise
@@ -442,8 +479,8 @@ async def run_appointment_saga(appointment_data: dict[str, Any]) -> dict[str, An
 
     try:
         client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
-    except Exception:
-        return await _run_appointment_saga_locally(appointment_data)
+    except Exception as exc:
+        raise AppError("Temporal workflow service is unavailable", status_code=503, error_type="workflow_unavailable") from exc
 
     workflow_id = appointment_data.get("workflow_id")
     if not workflow_id:

@@ -112,9 +112,9 @@ def test_five_concurrent_bookings_allow_only_one_confirmed_appointment(client):
     db = SessionLocal()
     try:
         provider_user = db.query(User).filter(User.email == "provider@example.com").one()
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
         department = Department(name="Concurrency", description="Concurrency test")
-        db.add_all([provider, department])
+        db.add(department)
         db.flush()
         service = Service(name="Concurrent checkup", department_id=department.id, is_published=True)
         db.add(service)
@@ -179,6 +179,18 @@ def _ensure_patient(db, user_id):
     return patient
 
 
+def _ensure_provider(db, user_id, bio=None):
+    provider = db.query(Provider).filter(Provider.user_id == user_id).one_or_none()
+    if provider is None:
+        provider = Provider(user_id=user_id, bio=bio)
+        db.add(provider)
+    elif bio is not None and provider.bio is None:
+        provider.bio = bio
+    db.commit()
+    db.refresh(provider)
+    return provider
+
+
 def test_chunk_service_includes_service_context():
     chunks = asyncio.run(
         chunk_service(
@@ -214,6 +226,22 @@ def test_register_login_and_invalid_token(client):
     assert invalid.status_code == 401
 
 
+def test_provider_registration_creates_provider_profile(client):
+    provider_user = _create_user(client, "provider-signup@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        provider = db.query(Provider).filter(Provider.user_id == provider_user["id"]).one_or_none()
+        assert provider is not None
+        assert provider.user_id == provider_user["id"]
+        assert provider.bio is None
+        assert provider.department_id is None
+    finally:
+        db.close()
+
+
 def test_patient_register_creates_profile_and_can_reserve_slot(client):
     _create_user(client, "provider@example.com", "secret123", "provider")
     _create_user(client, "patient2@example.com", "secret123", "patient")
@@ -228,10 +256,7 @@ def test_patient_register_creates_profile_and_can_reserve_slot(client):
         patient_profile = db.query(Patient).filter(Patient.user_id == patient_user.id).one_or_none()
         assert patient_profile is not None
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Dermatology", description="Skin care")
         db.add(department)
@@ -280,10 +305,7 @@ def test_patient_cannot_access_provider_schedule_or_other_patient_data(client):
         db.commit()
         db.refresh(provider_user)
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Cardiology", description="Heart care")
         db.add(department)
@@ -419,7 +441,14 @@ def test_provider_can_update_own_profile_using_user_id_or_provider_id(client):
     assert update_by_provider_id.json()["specialty"] == "Family medicine"
 
 
-def test_staff_can_create_and_list_services_with_public_filters(client):
+def test_staff_can_create_and_list_services_with_public_filters(client, monkeypatch):
+    async def temporal_unavailable(*args, **kwargs):
+        raise ConnectionError("Temporal unavailable in unit test")
+
+    from app.services import service_management
+
+    monkeypatch.setattr(service_management.temporal_client.Client, "connect", temporal_unavailable)
+
     _create_user_record("admin@example.com", "secret123", "admin")
     _create_user(client, "patient@example.com", "secret123", "patient")
     admin_token = _login(client, "admin@example.com", "secret123")
@@ -435,10 +464,21 @@ def test_staff_can_create_and_list_services_with_public_filters(client):
 
     service_response = client.post(
         "/api/v1/services",
-        json={"name": "MRI Scan", "description": "MRI diagnostic", "department_id": department_id, "is_published": True},
+        json={
+            "name": "MRI Scan",
+            "description": "MRI diagnostic",
+            "preparation_instructions": "Bring prior imaging reports.",
+            "department_id": department_id,
+            "is_published": True,
+        },
         headers=admin_headers,
     )
     assert service_response.status_code == 200
+    publish_response = client.post(
+        f"/api/v1/services/{service_response.json()['id']}/publish",
+        headers=admin_headers,
+    )
+    assert publish_response.status_code == 202
 
     patient_token = _login(client, "patient@example.com", "secret123")
     patient_headers = {"Authorization": f"Bearer {patient_token}"}
@@ -462,10 +502,7 @@ def test_appointment_and_status_history_are_created_for_slot(client):
 
         patient = _ensure_patient(db, patient_user.id)
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Cardiology", description="Heart care")
         db.add(department)
@@ -534,10 +571,7 @@ def test_appointment_saga_endpoints_create_state_cancel_and_reschedule(client):
 
         patient = _ensure_patient(db, patient_user.id)
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Cardiology", description="Heart care")
         db.add(department)
@@ -626,10 +660,7 @@ def test_booking_is_idempotent_with_idempotency_key(client):
         patient = _ensure_patient(db, patient_user.id)
         patient_id = patient.id
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Cardiology", description="Heart care")
         db.add(department)
@@ -689,10 +720,7 @@ def test_visit_lifecycle_transitions_are_idempotent(client):
 
         patient = _ensure_patient(db, patient_user.id)
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Cardiology", description="Heart care")
         db.add(department)
@@ -766,10 +794,7 @@ def test_billing_precheck_is_idempotent(client):
 
         patient = _ensure_patient(db, patient_user.id)
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Cardiology", description="Heart care")
         db.add(department)
@@ -810,7 +835,7 @@ def test_billing_precheck_is_idempotent(client):
 
     first = client.post(f"/api/v1/appointments/{appointment.id}/billing/pre-check", headers=patient_headers)
     assert first.status_code == 200
-    assert first.json()["status"] == BillingStatus.PENDING.value
+    assert first.json()["status"] == BillingStatus.APPROVED.value
 
     second = client.post(f"/api/v1/appointments/{appointment.id}/billing/pre-check", headers=patient_headers)
     assert second.status_code == 200
@@ -874,10 +899,7 @@ def test_slot_reservation_prevents_double_booking(client):
 
         patient = _ensure_patient(db, patient_user.id)
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Cardiology", description="Heart care")
         db.add(department)
@@ -925,10 +947,7 @@ def test_duplicate_booking_is_rejected(client):
 
         patient = _ensure_patient(db, patient_user.id)
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Cardiology", description="Heart care")
         db.add(department)
@@ -976,10 +995,7 @@ def test_saga_compensation_releases_slot_on_failure(client):
 
         patient = _ensure_patient(db, patient_user.id)
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Cardiology", description="Heart care")
         db.add(department)
@@ -1102,10 +1118,7 @@ def test_visit_illegal_transition_is_rejected(client):
 
         patient = _ensure_patient(db, patient_user.id)
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
 
         department = Department(name="Cardiology", description="Heart care")
         db.add(department)
@@ -1301,7 +1314,7 @@ def test_cancelling_appointment_promotes_oldest_waitlisted_patient(client):
         db.add_all([provider_user, cancelled_patient_user, waiting_patient_user])
         db.flush()
 
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
         cancelled_patient = Patient(user_id=cancelled_patient_user.id)
         waiting_patient = Patient(user_id=waiting_patient_user.id)
         department = Department(name="Cardiology", description="Heart care")
@@ -1370,9 +1383,9 @@ def test_cancel_api_books_oldest_waitlisted_patient_and_lists_appointment(client
         cancelled_patient = db.query(Patient).filter(Patient.user_id == cancelled_user.id).one()
         first_patient = db.query(Patient).filter(Patient.user_id == first_user.id).one()
         second_patient = db.query(Patient).filter(Patient.user_id == second_user.id).one()
-        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
         department = Department(name="Cardiology", description="Heart care")
-        db.add_all([provider, department])
+        db.add(department)
         db.flush()
         service = Service(name="Checkup", department_id=department.id, is_published=True)
         db.add(service)

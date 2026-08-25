@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 from app import db as db_module
 from app.integrations.kafka_client import KafkaEventPublisher, KafkaProducerError
 from app.core.logging import get_correlation_id, get_request_id
@@ -25,7 +26,15 @@ class HealthcareEventService:
         db = db_module.SessionLocal()
         try:
             from app.models.outbox import OutboxEvent
-            db.add(OutboxEvent(event_type=event_type, entity_type=entity_type, entity_id=str(entity_id), payload=payload, last_error=error))
+            db.add(OutboxEvent(
+                event_id=str(payload.get("event_id") or uuid4()),
+                event_type=event_type,
+                entity_type=entity_type,
+                entity_id=str(entity_id),
+                payload=payload,
+                correlation_id=str(payload.get("correlation_id")) if payload.get("correlation_id") else None,
+                last_error=error,
+            ))
             db.commit()
         except Exception:
             db.rollback()
@@ -50,6 +59,9 @@ class HealthcareEventService:
         request_id: str | None = None,
         correlation_id: str | None = None,
         workflow_id: str | None = None,
+        scheduled_at: str | None = None,
+        checked_in_at: str | None = None,
+        wait_seconds: int | None = None,
     ) -> dict[str, object]:
         """
         Publish an appointment event with automatic correlation context.
@@ -76,6 +88,7 @@ class HealthcareEventService:
         # Auto-capture from context if not explicitly provided
         resolved_correlation_id = correlation_id or get_correlation_id()
         resolved_request_id = request_id or get_request_id()
+        event_id = str(uuid4())
         
         metadata = {
             "appointment_id": appointment_id,
@@ -91,6 +104,10 @@ class HealthcareEventService:
             "request_id": resolved_request_id,
             "correlation_id": resolved_correlation_id,
             "workflow_id": workflow_id,
+            "event_id": event_id,
+            "scheduled_at": scheduled_at,
+            "checked_in_at": checked_in_at,
+            "wait_seconds": wait_seconds,
         }
         
         try:

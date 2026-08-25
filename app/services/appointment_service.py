@@ -11,7 +11,7 @@ from app.core.metrics import (
     record_visit_status_transition,
     record_appointment_booking_time,
 )
-from app.models import AppointmentStatus, BillingStatus, User, UserRole, VisitStatus
+from app.models import AppointmentStatus, BillingStatus, Provider, User, UserRole, VisitStatus
 from app.repositories import AppointmentRepository, PatientRepository, SlotRepository
 from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead
 from app.services.base import BaseService
@@ -28,6 +28,18 @@ class AppointmentService(BaseService):
         self.patients = PatientRepository(db)
         self.slots = SlotRepository(db)
         self.events = HealthcareEventService()
+
+    def _authorize(self, appointment, current_user: User) -> None:
+        if current_user.role == UserRole.patient:
+            patient = self.patients.get_by_user_id(current_user.id)
+            if not patient or appointment.patient_id != patient.id:
+                raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        elif current_user.role == UserRole.provider:
+            provider = self.db.query(Provider).filter(Provider.user_id == current_user.id).first()
+            if not provider or appointment.provider_id != provider.id:
+                raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        elif current_user.role not in {UserRole.admin, UserRole.front_desk}:
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
 
     async def create(self, payload: AppointmentCreate, current_user: User, idempotency_key: Optional[str] = None):
         """Create a new appointment with saga workflow."""
@@ -114,16 +126,27 @@ class AppointmentService(BaseService):
             self.log_warning("Appointment not found", operation="get_appointment_state", data={"appointment_id": appointment_id})
             raise AppError("Appointment not found", status_code=404, error_type="not_found")
 
-        if current_user.role == UserRole.patient:
-            patient = self.patients.get_by_user_id(current_user.id)
-            if not patient or appointment.patient_id != patient.id:
-                self.log_warning("Unauthorized access to appointment", operation="get_appointment_state", data={"appointment_id": appointment_id})
-                raise AppError("Forbidden", status_code=403, error_type="forbidden")
-        elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-            self.log_warning("Insufficient role for appointment access", operation="get_appointment_state", data={"role": current_user.role})
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        self._authorize(appointment, current_user)
 
         return {"id": appointment.id, "status": appointment.status.value, "slot_id": appointment.slot_id}
+
+    def list(self, limit: int, offset: int, current_user: User):
+        patient_id = None
+        provider_id = None
+        if current_user.role == UserRole.patient:
+            patient = self.patients.get_by_user_id(current_user.id)
+            if not patient:
+                raise AppError("Patient profile not found", status_code=404, error_type="not_found")
+            patient_id = patient.id
+        elif current_user.role == UserRole.provider:
+            provider = self.db.query(Provider).filter(Provider.user_id == current_user.id).first()
+            if not provider:
+                raise AppError("Provider profile not found", status_code=404, error_type="not_found")
+            provider_id = provider.id
+        elif current_user.role not in {UserRole.admin, UserRole.front_desk}:
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        items, total = self.appointments.list_scoped(patient_id=patient_id, provider_id=provider_id, limit=limit, offset=offset)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     def cancel(self, appointment_id: int, current_user: User):
         """Cancel an appointment."""
@@ -134,13 +157,7 @@ class AppointmentService(BaseService):
             self.log_warning("Appointment not found for cancellation", operation="cancel_appointment", data={"appointment_id": appointment_id})
             raise AppError("Appointment not found", status_code=404, error_type="not_found")
 
-        if current_user.role == UserRole.patient:
-            patient = self.patients.get_by_user_id(current_user.id)
-            if not patient or appointment.patient_id != patient.id:
-                self.log_warning("Unauthorized cancellation attempt", operation="cancel_appointment", data={"appointment_id": appointment_id})
-                raise AppError("Forbidden", status_code=403, error_type="forbidden")
-        elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        self._authorize(appointment, current_user)
 
         if appointment.status.value in {AppointmentStatus.CANCELLED.value, AppointmentStatus.COMPLETED.value}:
             self.log_warning("Cannot cancel terminal appointment", operation="cancel_appointment", data={"appointment_id": appointment_id, "status": appointment.status.value})
@@ -164,12 +181,7 @@ class AppointmentService(BaseService):
         if not appointment:
             raise AppError("Appointment not found", status_code=404, error_type="not_found")
 
-        if current_user.role == UserRole.patient:
-            patient = self.patients.get_by_user_id(current_user.id)
-            if not patient or appointment.patient_id != patient.id:
-                raise AppError("Forbidden", status_code=403, error_type="forbidden")
-        elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        self._authorize(appointment, current_user)
 
         if appointment.status.value in {AppointmentStatus.CANCELLED.value, AppointmentStatus.COMPLETED.value}:
             self.log_warning("Cannot reschedule terminal appointment", operation="reschedule_appointment", data={"appointment_id": appointment_id})
@@ -180,6 +192,8 @@ class AppointmentService(BaseService):
             raise AppError("Replacement slot not found", status_code=404, error_type="not_found")
         if new_slot.status.value != "AVAILABLE":
             raise AppError("Replacement slot is no longer available", status_code=409, error_type="conflict")
+        if new_slot.provider_id != appointment.provider_id or new_slot.service_id != appointment.service_id:
+            raise AppError("Replacement slot must use the same provider and service", status_code=409, error_type="conflict")
 
         self.log_info("Appointment rescheduled", operation="reschedule_appointment", data={"appointment_id": appointment_id, "old_slot": appointment.slot_id, "new_slot": new_slot.id})
         return self.appointments.reschedule(appointment, new_slot)
@@ -255,4 +269,5 @@ class AppointmentService(BaseService):
             return existing
         
         self.log_info("Creating new billing record", operation="billing_precheck", data={"appointment_id": appointment_id})
-        return self.appointments.create_billing(appointment.id)
+        from app.services.billing_checker import BillingChecker
+        return BillingChecker(self.db).precheck(appointment, idempotency_key=f"appointment:{appointment.id}")

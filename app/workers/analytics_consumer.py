@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.settings import settings
 from app.db import SessionLocal
-from app.models import AnalyticsAppointmentDaily, AnalyticsProcessedEvent, AnalyticsServiceDaily
+from app.models import AnalyticsAppointmentDaily, AnalyticsDaily, AnalyticsProcessedEvent, AnalyticsServiceDaily
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +52,13 @@ class AnalyticsConsumer:
 
     def _is_safe_payload(self, payload: dict[str, Any]) -> bool:
         forbidden = {"name", "email", "phone", "dob", "address", "diagnosis", "notes", "symptoms", "medical_history"}
-        lower_keys = {str(key).lower() for key in payload.keys()}
-        return not lower_keys.intersection(forbidden)
+        def contains_forbidden(value: Any) -> bool:
+            if isinstance(value, dict):
+                return any(str(key).lower() in forbidden or contains_forbidden(item) for key, item in value.items())
+            if isinstance(value, list):
+                return any(contains_forbidden(item) for item in value)
+            return False
+        return not contains_forbidden(payload)
 
     def _store_processed(self, db: Session, event_id: str, event_type: str, topic: str, payload: dict[str, Any]) -> None:
         existing = db.query(AnalyticsProcessedEvent).filter(AnalyticsProcessedEvent.event_id == event_id).first()
@@ -78,7 +83,11 @@ class AnalyticsConsumer:
         slot_id = payload.get("slot_id")
         status = payload.get("status")
         visit_status = payload.get("visit_status")
-        event_date = datetime.now(timezone.utc).date().isoformat()
+        occurred_at = payload.get("occurred_at")
+        try:
+            event_date = datetime.fromisoformat(str(occurred_at)).date().isoformat() if occurred_at else datetime.now(timezone.utc).date().isoformat()
+        except ValueError:
+            event_date = datetime.now(timezone.utc).date().isoformat()
 
         if appointment_id is None:
             return
@@ -117,13 +126,44 @@ class AnalyticsConsumer:
         record.visit_status = str(visit_status) if visit_status is not None else record.visit_status
         record.last_event_at = datetime.now(timezone.utc)
         record.updated_at = datetime.now(timezone.utc)
+        daily = self._get_daily(db, event_date)
+        if event_type == "appointment.created":
+            daily.appointments_booked += 1
+        elif event_type == "appointment.cancelled":
+            daily.cancellations += 1
+        elif event_type in {"visit.completed", "appointment.visit_status_changed"} and visit_status == "COMPLETED":
+            daily.completed_visits += 1
+            if payload.get("wait_seconds") is not None:
+                wait_seconds = int(payload["wait_seconds"])
+                daily.avg_wait_seconds = int(((daily.avg_wait_seconds or 0) * daily.wait_samples + wait_seconds) / (daily.wait_samples + 1))
+                daily.wait_samples += 1
+        if event_type == "appointment.created" and payload.get("patient_id") is not None:
+            patient_id = int(payload["patient_id"])
+            existing_patient = db.query(AnalyticsAppointmentDaily).filter(
+                AnalyticsAppointmentDaily.patient_id == patient_id,
+                AnalyticsAppointmentDaily.id != record.id,
+            ).first()
+            if existing_patient is None:
+                daily.total_patients += 1
+
+    def _get_daily(self, db: Session, event_date: str) -> AnalyticsDaily:
+        daily = db.query(AnalyticsDaily).filter(AnalyticsDaily.date == event_date).first()
+        if daily is None:
+            daily = AnalyticsDaily(date=datetime.fromisoformat(event_date).date())
+            db.add(daily)
+            db.flush()
+        return daily
 
     def _update_service_metrics(self, db: Session, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("event_type", "unknown"))
         service_id = payload.get("service_id")
         department_id = payload.get("department_id")
         status = payload.get("status")
-        event_date = datetime.now(timezone.utc).date().isoformat()
+        occurred_at = payload.get("occurred_at")
+        try:
+            event_date = datetime.fromisoformat(str(occurred_at)).date().isoformat() if occurred_at else datetime.now(timezone.utc).date().isoformat()
+        except ValueError:
+            event_date = datetime.now(timezone.utc).date().isoformat()
 
         if service_id is None:
             return

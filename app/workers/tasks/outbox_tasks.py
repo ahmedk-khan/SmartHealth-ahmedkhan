@@ -1,9 +1,11 @@
 import logging
+import json
+import datetime
 
 from app.celery_app import celery_app
 from app.db import SessionLocal
 from app.integrations.kafka_client import KafkaEventPublisher, KafkaProducerError
-from app.models import OutboxEvent
+from app.models import AnalyticsDaily, FailedJob, OutboxEvent
 
 
 logger = logging.getLogger(__name__)
@@ -33,11 +35,27 @@ def publish_pending_events(self, limit: int = 100) -> dict[str, int]:
                     **event.payload,
                 )
                 event.status = "PUBLISHED"
+                event.published_at = datetime.datetime.now(datetime.timezone.utc)
                 event.attempts += 1
                 published += 1
             except KafkaProducerError as exc:
                 event.attempts += 1
                 event.last_error = str(exc)[:500]
+                if event.attempts >= self.max_retries + 1:
+                    event.status = "FAILED"
+                    db.add(FailedJob(
+                        task_name=self.name,
+                        task_id=self.request.id,
+                        exception_type=type(exc).__name__,
+                        error_message=str(exc),
+                        payload=json.dumps({"event_id": event.event_id, "event_type": event.event_type}),
+                    ))
+                    today = datetime.datetime.now(datetime.timezone.utc).date()
+                    aggregate = db.query(AnalyticsDaily).filter(AnalyticsDaily.date == today).first()
+                    if aggregate is None:
+                        aggregate = AnalyticsDaily(date=today)
+                        db.add(aggregate)
+                    aggregate.failed_workflows += 1
                 failed += 1
         db.commit()
         return {"published": published, "failed": failed}

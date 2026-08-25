@@ -1,8 +1,9 @@
 from datetime import datetime
 from enum import Enum
 from typing import Generic, List, Optional, TypeVar
+from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T")
 
@@ -65,6 +66,7 @@ class ServiceBase(BaseModel):
     specialty: Optional[str] = None
     preparation_instructions: Optional[str] = None
     department_id: int
+    price: Decimal = Field(default=Decimal("0.00"), ge=0, decimal_places=2, max_digits=10)
     is_published: bool = False
 
 

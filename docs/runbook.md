@@ -141,6 +141,34 @@ Look for fields such as:
 
 ## Common Incident Response
 
+### Integration verification
+
+Run the application-level checks first:
+
+```bash
+pytest -q
+```
+
+Run the live infrastructure checks with the Compose dependencies running:
+
+```bash
+docker compose up -d postgres redis kafka temporal celery-worker celery-beat temporal-worker analytics-consumer
+alembic upgrade head
+pytest -q tests/integration
+```
+
+For Temporal recovery, start a publish or booking workflow, stop `temporal-worker`, confirm the workflow is still running in the Temporal UI at `http://localhost:8233`, restart the worker, and verify the workflow reaches its terminal state without duplicate appointments or content chunks.
+
+For Kafka failure recovery, stop Kafka and trigger a domain event. Confirm the event is in `outbox_events` with `status = 'PENDING'` and a stable `event_id`. Restart Kafka and run:
+
+```bash
+celery -A app.celery_app call app.workers.tasks.outbox_tasks.publish_pending_events
+```
+
+Confirm the same `event_id` is published once and the row has `status = 'PUBLISHED'` and a non-null `published_at`.
+
+For PostgreSQL booking contention, use the PostgreSQL `DATABASE_URL` and run the concurrency test with at least 50 workers. The expected result is one confirmed appointment, one reserved slot, and all other attempts rejected.
+
 ### 1. API is not responding
 
 Check:

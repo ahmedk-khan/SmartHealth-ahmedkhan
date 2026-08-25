@@ -38,9 +38,11 @@ def decode_access_token(token: str) -> dict[str, Any]:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         return payload
     except JWTError as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("JWT validation failed", exc_info=exc)
         raise AppError(
             "Could not validate credentials",
             status_code=401,
             error_type="invalid_token",
-            detail=str(exc),
         )

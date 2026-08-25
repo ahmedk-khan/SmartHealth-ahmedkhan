@@ -31,6 +31,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise AppError("Invalid authentication credentials", status_code=401, error_type="invalid_token") from exc
     if not user:
         raise AppError("User not found", status_code=401, error_type="user_not_found")
+    if not user.is_active:
+        raise AppError("Inactive user", status_code=401, error_type="inactive_user")
     return user
 
 

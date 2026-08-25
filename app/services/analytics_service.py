@@ -3,7 +3,7 @@ import datetime
 from sqlalchemy import func
 
 from app.core.exceptions import AppError
-from app.models import AnalyticsAppointmentDaily, AnalyticsServiceDaily, Appointment, AppointmentStatus, Billing, Patient, Service, VisitStatus
+from app.models import AnalyticsAppointmentDaily, AnalyticsDaily, AnalyticsServiceDaily, Appointment, AppointmentStatus, FailedJob, Patient, Slot, Visit, VisitStatus
 from app.services.base import BaseService
 
 
@@ -14,22 +14,16 @@ class AnalyticsService(BaseService):
         except ValueError as exc:
             raise AppError("Invalid date format", status_code=400, error_type="validation_error", detail=str(exc)) from exc
 
-        start = datetime.datetime.combine(target_day, datetime.time.min, tzinfo=datetime.timezone.utc)
-        end = start + datetime.timedelta(days=1)
-
-        total_appointments = self.db.query(func.count(Appointment.id)).filter(
-            Appointment.created_at >= start,
-            Appointment.created_at < end,
-        ).scalar() or 0
-
-        total_patients = self.db.query(func.count(Patient.id)).scalar() or 0
-        total_billing = self.db.query(func.coalesce(func.sum(Billing.amount), 0)).scalar() or 0
+        aggregate = self.db.query(AnalyticsDaily).filter(AnalyticsDaily.date == target_day).first()
 
         return {
             "date": target_day.isoformat(),
-            "appointments_total": int(total_appointments),
-            "patients_total": int(total_patients),
-            "billing_total": float(total_billing),
+            "appointments_booked": int(aggregate.appointments_booked if aggregate else 0),
+            "completed_visits": int(aggregate.completed_visits if aggregate else 0),
+            "cancellations": int(aggregate.cancellations if aggregate else 0),
+            "average_wait_seconds": float(aggregate.avg_wait_seconds if aggregate and aggregate.avg_wait_seconds is not None else 0),
+            "failed_workflows": int(aggregate.failed_workflows if aggregate else 0),
+            "patients_total": int(aggregate.total_patients if aggregate else 0),
         }
 
     def _aggregate_metric(self, event_type: str, *, visit_status: str | None = None) -> int:
@@ -53,46 +47,66 @@ class AnalyticsService(BaseService):
         )
         return int(value)
 
-    def get_dashboard_metrics(self) -> dict[str, int | float]:
-        appointments_total = self.db.query(func.count(Appointment.id)).scalar() or 0
-        cancelled_appointments_total = self.db.query(func.count(Appointment.id)).filter(
-            Appointment.status == AppointmentStatus.CANCELLED,
-        ).scalar() or 0
-        completed_visits_total = self.db.query(func.count(Appointment.id)).filter(
-            Appointment.visit_status == VisitStatus.COMPLETED,
-        ).scalar() or 0
-        published_services_total = self.db.query(func.count(Service.id)).filter(
-            Service.is_published.is_(True),
-        ).scalar() or 0
-        patients_total = self.db.query(func.count(Patient.id)).scalar() or 0
-        billing_total = self.db.query(func.coalesce(func.sum(Billing.amount), 0)).scalar() or 0
+    def get_dashboard_metrics(self, start_date: str | None = None, end_date: str | None = None) -> dict[str, int | float]:
+        daily = self.db.query(AnalyticsDaily)
+        if start_date:
+            daily = daily.filter(AnalyticsDaily.date >= datetime.date.fromisoformat(start_date))
+        if end_date:
+            daily = daily.filter(AnalyticsDaily.date <= datetime.date.fromisoformat(end_date))
+        daily_rows = daily.subquery()
+        appointments_total = self.db.query(func.coalesce(func.sum(daily_rows.c.appointments_booked), 0)).scalar() or 0
+        cancelled_appointments_total = self.db.query(func.coalesce(func.sum(daily_rows.c.cancellations), 0)).scalar() or 0
+        completed_visits_total = self.db.query(func.coalesce(func.sum(daily_rows.c.completed_visits), 0)).scalar() or 0
+        patient_rollups = self.db.query(func.count(func.distinct(AnalyticsAppointmentDaily.patient_id))).filter(
+            AnalyticsAppointmentDaily.patient_id.isnot(None),
+        )
+        if start_date:
+            patient_rollups = patient_rollups.filter(AnalyticsAppointmentDaily.event_date >= start_date)
+        if end_date:
+            patient_rollups = patient_rollups.filter(AnalyticsAppointmentDaily.event_date <= end_date)
+        patients_total = patient_rollups.scalar() or 0
+        wait_total = self.db.query(func.coalesce(func.sum(daily_rows.c.avg_wait_seconds * daily_rows.c.wait_samples), 0)).scalar() or 0
+        wait_samples = self.db.query(func.coalesce(func.sum(daily_rows.c.wait_samples), 0)).scalar() or 0
+        cancellation_rate = (cancelled_appointments_total / appointments_total) if appointments_total else 0.0
 
         return {
             "appointments_total": int(appointments_total),
             "patients_total": int(patients_total),
             "completed_visits_total": int(completed_visits_total),
             "cancelled_appointments_total": int(cancelled_appointments_total),
-            "published_services_total": int(published_services_total),
-            "billing_total": float(billing_total),
+            "cancellation_rate": float(cancellation_rate),
+            "average_wait_seconds": float(wait_total / wait_samples) if wait_samples else 0.0,
+            "failed_workflows_total": int(self.db.query(func.coalesce(func.sum(daily_rows.c.failed_workflows), 0)).scalar() or 0),
         }
 
     def reconcile_metrics(self) -> dict[str, object]:
         aggregate_metrics = self.get_dashboard_metrics()
 
+        wait_rows = self.db.query(Visit.checked_in_at, Slot.start_datetime).join(
+            Appointment, Appointment.id == Visit.appointment_id,
+        ).join(Slot, Slot.id == Appointment.slot_id).filter(Visit.checked_in_at.isnot(None)).all()
+        raw_wait = (
+            sum((checked_in_at - scheduled_at).total_seconds() for checked_in_at, scheduled_at in wait_rows) / len(wait_rows)
+            if wait_rows else 0.0
+        )
         raw_metrics = {
             "appointments_total": self.db.query(func.count(Appointment.id)).scalar() or 0,
             "patients_total": self.db.query(func.count(Patient.id)).scalar() or 0,
             "completed_visits_total": self.db.query(func.count(Appointment.id)).filter(Appointment.visit_status == VisitStatus.COMPLETED).scalar() or 0,
             "cancelled_appointments_total": self.db.query(func.count(Appointment.id)).filter(Appointment.status == AppointmentStatus.CANCELLED).scalar() or 0,
-            "published_services_total": self.db.query(func.count(Service.id)).filter(Service.is_published.is_(True)).scalar() or 0,
-            "billing_total": self.db.query(func.coalesce(func.sum(Billing.amount), 0)).scalar() or 0,
+            "cancellation_rate": 0.0,
+            "average_wait_seconds": raw_wait,
+            "failed_workflows_total": self.db.query(func.count(FailedJob.id)).scalar() or 0,
         }
+        raw_appointments = raw_metrics["appointments_total"]
+        raw_cancellations = raw_metrics["cancelled_appointments_total"]
+        raw_metrics["cancellation_rate"] = raw_cancellations / raw_appointments if raw_appointments else 0.0
 
         drift: list[dict[str, object]] = []
         for key in sorted(raw_metrics):
             raw_value = raw_metrics[key]
             aggregate_value = aggregate_metrics.get(key, 0)
-            delta = int(raw_value) - int(aggregate_value)
+            delta = float(raw_value) - float(aggregate_value)
             if delta != 0:
                 drift.append({
                     "metric": key,

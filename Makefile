@@ -1,4 +1,4 @@
-.PHONY: up down test seed lint migrate demo
+.PHONY: up down test infra-test seed lint migrate demo
 
 up:
 	docker compose up --build
@@ -11,6 +11,9 @@ demo:
 
 test:
 	python -m pytest -q
+
+infra-test:
+	RUN_DOCKER_INTEGRATION=1 python -m pytest -q tests/integration -m integration
 
 seed:
 	python -m scripts.seed

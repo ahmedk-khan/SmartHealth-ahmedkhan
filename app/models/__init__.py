@@ -13,6 +13,14 @@ from app.models.service import Service, ServiceStatus, provider_services
 from app.models.slot import Slot, SlotStatus
 from app.models.user import User, UserRole
 from app.models.waitlist import WaitlistEntry, WaitlistStatus
+from app.models.slot_reservation import SlotReservation, SlotReservationStatus
+from app.models.visit import Visit
+from app.models.notification import Notification, NotificationStatus
+from app.models.idempotency_key import IdempotencyKey
+from app.models.ai_interaction import AIInteraction
+from app.models.generated_content import GeneratedContent
+from app.models.processed_event import ProcessedEvent
+from app.models.analytics_daily import AnalyticsDaily
 
 __all__ = [
     "Base",
@@ -41,4 +49,14 @@ __all__ = [
     "OutboxEvent",
     "WaitlistEntry",
     "WaitlistStatus",
+    "SlotReservation",
+    "SlotReservationStatus",
+    "Visit",
+    "Notification",
+    "NotificationStatus",
+    "IdempotencyKey",
+    "AIInteraction",
+    "GeneratedContent",
+    "ProcessedEvent",
+    "AnalyticsDaily",
 ]

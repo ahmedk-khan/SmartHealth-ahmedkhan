@@ -15,12 +15,13 @@ class ServiceRepository(BaseRepository):
         self.audit("service", service.id, "publishing", after={"status": service.status.value})
         self.db.commit()
 
-    def mark_published(self, service: Service) -> None:
+    def mark_published(self, service: Service, *, commit: bool = True) -> None:
         service.status = ServiceStatus.PUBLISHED
         service.is_published = True
         self.db.add(service)
         self.audit("service", service.id, "published", after={"status": service.status.value})
-        self.db.commit()
+        if commit:
+            self.db.commit()
 
     def mark_publish_failed(self, service: Service) -> None:
         service.status = ServiceStatus.PUBLISH_FAILED
@@ -68,10 +69,12 @@ class ServiceRepository(BaseRepository):
         self.db.refresh(service)
         return service
 
-    def list_published(self, offset: int, limit: int, search: str | None = None) -> tuple[list[Service], int]:
+    def list_published(self, offset: int, limit: int, search: str | None = None, department_id: int | None = None) -> tuple[list[Service], int]:
         query = self.db.query(Service).filter(Service.is_published.is_(True))
         if search:
             query = query.filter(Service.name.ilike(f"%{search}%"))
+        if department_id is not None:
+            query = query.filter(Service.department_id == department_id)
         total = query.count()
         items = query.order_by(Service.id).offset(offset).limit(limit).all()
         return items, total
@@ -81,3 +84,10 @@ class ServiceRepository(BaseRepository):
         total = query.count()
         items = query.order_by(Service.id).offset(offset).limit(limit).all()
         return items, total
+
+    def published_without_chunks(self) -> list[int]:
+        rows = self.db.query(Service.id).filter(
+            Service.is_published.is_(True),
+            ~Service.content_chunks.any(),
+        ).all()
+        return [service_id for service_id, in rows]

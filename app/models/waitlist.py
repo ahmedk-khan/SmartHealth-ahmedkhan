@@ -19,6 +19,7 @@ class WaitlistEntry(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     slot_id = Column(Integer, ForeignKey("slots.id"), nullable=False)
+    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=True, index=True)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     status = Column(SAEnum(WaitlistStatus), nullable=False, default=WaitlistStatus.WAITING)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)

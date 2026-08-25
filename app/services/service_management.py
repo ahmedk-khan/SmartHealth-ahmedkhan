@@ -7,7 +7,7 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from app.core.exceptions import AppError
 from app.core.settings import settings
-from app.models import Provider, ServiceStatus, User, UserRole
+from app.models import Provider, ServiceStatus, User, UserRole, provider_services
 from app.repositories import ServiceRepository
 from app.services.base import BaseService
 from app.services.healthcare_event_service import HealthcareEventService
@@ -41,16 +41,21 @@ class ServiceManagementService(BaseService):
         if not self.repository.department_exists(payload.department_id):
             raise AppError("Department not found", status_code=404, error_type="not_found")
         service_data = payload.model_dump()
-        service_data["status"] = ServiceStatus.PUBLISHED if service_data.get("is_published") else ServiceStatus.DRAFT
-        created = self.repository.create_service(service_data)
+        # Publication is a Temporal workflow; creation can only produce a draft.
+        service_data["is_published"] = False
+        service_data["status"] = ServiceStatus.DRAFT
+        provider = None
         if current_user.role == UserRole.provider:
             provider = self.db.query(Provider).filter(Provider.user_id == current_user.id).first()
-            if provider:
-                provider.services.append(created)
+            if not provider:
+                provider = Provider(user_id=current_user.id)
                 self.db.add(provider)
-                self.db.commit()
-                self.db.refresh(provider)
-                self.db.refresh(created)
+                self.db.flush()
+        created = self.repository.create_service(service_data)
+        if provider:
+            self.db.execute(provider_services.insert().values(provider_id=provider.id, service_id=created.id))
+            self.db.commit()
+            self.db.refresh(created)
         HealthcareEventService().publish_service_event("service.created", service_id=created.id, department_id=created.department_id, status=created.status.value)
         return created
 
@@ -73,6 +78,14 @@ class ServiceManagementService(BaseService):
         service = self.repository.get_by_id(service_id)
         if not service:
             raise AppError("Service not found", status_code=404, error_type="not_found")
+        if current_user.role == UserRole.provider:
+            provider = self.db.query(Provider).filter(Provider.user_id == current_user.id).first()
+            if not provider or not provider.specialty or not provider.department_id:
+                raise AppError(
+                    "Complete your provider profile before publishing a service",
+                    status_code=409,
+                    error_type="provider_profile_incomplete",
+                )
         self._ensure_provider_service_access(service, current_user)
         if service.status == ServiceStatus.PUBLISHED:
             raise AppError("Service is already published", status_code=409, error_type="conflict")
@@ -84,9 +97,11 @@ class ServiceManagementService(BaseService):
         workflow_id = f"service-publish-{service.id}"
         try:
             client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
-        except Exception:
-            handle = await self._start_local_publish_workflow(service.id, workflow_id)
-            return {"workflow_id": workflow_id, "run_id": handle.run_id}
+        except Exception as exc:
+            if settings.app_env.lower() in {"local", "test", "development"}:
+                handle = await self._start_local_publish_workflow(service.id, workflow_id)
+                return {"workflow_id": workflow_id, "run_id": handle.run_id}
+            raise AppError("Temporal workflow service is unavailable", status_code=503, error_type="workflow_unavailable") from exc
         try:
             handle = await client.start_workflow(
                 ServicePublishWorkflow.run,
@@ -139,7 +154,10 @@ class ServiceManagementService(BaseService):
         if current_user.role != UserRole.provider:
             return
         provider = self.db.query(Provider).filter(Provider.user_id == current_user.id).first()
-        if not provider or service not in provider.services:
+        if not provider or not self.db.query(provider_services).filter(
+            provider_services.c.provider_id == provider.id,
+            provider_services.c.service_id == service.id,
+        ).first():
             raise AppError("Forbidden", status_code=403, error_type="forbidden")
 
     async def _start_local_publish_workflow(self, service_id: int, workflow_id: str) -> _LocalWorkflowHandle:

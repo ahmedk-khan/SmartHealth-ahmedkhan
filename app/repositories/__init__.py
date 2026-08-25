@@ -6,6 +6,7 @@ from app.repositories.patients import PatientRepository
 from app.repositories.providers import ProviderRepository
 from app.repositories.services import ServiceRepository
 from app.repositories.slots import SlotRepository
+from app.repositories.waitlist import WaitlistRepository
 
 __all__ = [
     "AppointmentRepository",
@@ -16,4 +17,5 @@ __all__ = [
     "ProviderRepository",
     "ServiceRepository",
     "SlotRepository",
+    "WaitlistRepository",
 ]

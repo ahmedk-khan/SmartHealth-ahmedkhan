@@ -16,6 +16,7 @@ from app.workflows.appointment_saga import (
     run_billing_precheck,
     reserve_slot,
     send_reminder,
+    cancel_reminder,
     validate_appointment_data,
 )
 
@@ -62,6 +63,7 @@ def main() -> None:
                 reserve_slot,
                 run_billing_precheck,
                 send_reminder,
+                cancel_reminder,
                 confirm_appointment,
                 release_slot,
                 cancel_pending_appointment,

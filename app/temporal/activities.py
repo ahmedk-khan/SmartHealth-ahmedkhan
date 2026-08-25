@@ -9,6 +9,7 @@ from app.workflows.appointment_saga import (
     run_billing_precheck,
     reserve_slot,
     send_reminder,
+    cancel_reminder,
     validate_appointment_data,
 )
 from app.workflows.service_publish import (
@@ -29,6 +30,7 @@ __all__ = [
     "run_billing_precheck",
     "reserve_slot",
     "send_reminder",
+    "cancel_reminder",
     "validate_appointment_data",
     "chunk_service",
     "embed_chunks",

@@ -12,7 +12,6 @@ from app.api.metrics_endpoint import create_metrics_endpoint
 from app.core.exceptions import AppError, app_error_handler, generate_request_id, http_exception_handler, unexpected_exception_handler, validation_exception_handler
 from app.core.logging import set_correlation_id, set_request_id, reset_correlation_id, reset_request_id, get_correlation_id, configure_logging
 from app.core.http_metrics_middleware import HTTPMetricsMiddleware
-from app.db import init_db
 
 
 logger = logging.getLogger(__name__)
@@ -23,7 +22,6 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
     yield
 
 

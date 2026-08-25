@@ -2,7 +2,7 @@ import logging
 import asyncio
 
 from temporalio import client, worker
-from temporalio.worker import UnsandboxedWorkflowRunner
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from app.core.settings import settings
 from app.workflows.service_publish import ServicePublishWorkflow, validate_service, structure_service, chunk_service, embed_chunks, mark_published, mark_publish_failed
@@ -40,7 +40,14 @@ def main() -> None:
 
         temporal_worker = worker.Worker(
             temporal_client,
-            workflow_runner=UnsandboxedWorkflowRunner(),
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules(
+                    "numpy",
+                    "pgvector",
+                    "sqlalchemy",
+                    "httpx",
+                ),
+            ),
             task_queue=settings.temporal_task_queue,
             workflows=[ServicePublishWorkflow, AppointmentSagaWorkflow],
             activities=[

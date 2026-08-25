@@ -48,6 +48,30 @@ class AppointmentRepository(BaseRepository):
                 slot.patient_id = next_entry.patient_id
                 next_entry.status = WaitlistStatus.PROMOTED
                 next_entry.updated_at = appointment.updated_at
+                promoted_appointment = Appointment(
+                    patient_id=next_entry.patient_id,
+                    provider_id=slot.provider_id,
+                    service_id=slot.service_id,
+                    slot_id=slot.id,
+                    status=AppointmentStatus.CONFIRMED,
+                    updated_at=appointment.updated_at,
+                )
+                self.db.add(promoted_appointment)
+                self.db.flush()
+                self.db.add(AppointmentStatusHistory(
+                    appointment_id=promoted_appointment.id,
+                    status=promoted_appointment.status,
+                ))
+                self.audit(
+                    "appointment",
+                    promoted_appointment.id,
+                    "promoted_from_waitlist",
+                    after={
+                        "status": promoted_appointment.status.value,
+                        "slot_id": slot.id,
+                        "waitlist_entry_id": next_entry.id,
+                    },
+                )
             self.audit("appointment", appointment.id, "cancelled", before={"status": previous_status}, after={"status": appointment.status.value})
         self.db.commit()
         self.db.refresh(appointment)

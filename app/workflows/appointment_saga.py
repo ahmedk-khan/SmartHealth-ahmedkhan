@@ -7,6 +7,7 @@ from typing import Any
 from temporalio import activity, workflow
 from temporalio import client as temporal_client
 from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
+from temporalio.exceptions import ApplicationError
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
@@ -17,9 +18,14 @@ from app.repositories.slots import SlotRepository
 from app.workflows.temporal_logging import setup_activity_context, log_activity_step, log_activity_error
 from app.core.settings import settings
 from app.services.billing_checker import BillingChecker
+from app.workflows.temporal_policies import BUSINESS_ACTIVITY_RETRY, COMPENSATION_RETRY, TRANSIENT_ACTIVITY_RETRY
 
 
 logger = logging.getLogger(__name__)
+
+
+def _non_retryable(exc: AppError) -> ApplicationError:
+    return ApplicationError(exc.message, type=exc.error_type, non_retryable=True)
 
 
 @activity.defn
@@ -53,7 +59,7 @@ async def validate_appointment_data(appointment_data: dict[str, Any]) -> dict[st
         return {"patient_id": patient.id, "slot_id": slot.id, "provider_id": slot.provider_id, "service_id": slot.service_id}
     except AppError as exc:
         log_activity_error("validate_appointment_data", exc)
-        raise
+        raise _non_retryable(exc) from exc
     finally:
         db.close()
 
@@ -88,7 +94,7 @@ async def reserve_slot(appointment_data: dict[str, Any]) -> dict[str, Any]:
         return {"slot_id": reserved.id, "patient_id": reserved.patient_id}
     except AppError as exc:
         log_activity_error("reserve_slot", exc)
-        raise
+        raise _non_retryable(exc) from exc
     finally:
         db.close()
 
@@ -128,6 +134,9 @@ async def run_billing_precheck(appointment_data: dict[str, Any]) -> dict[str, An
         
         logger.info("Billing precheck approved", extra={"appointment_id": billing.appointment_id, "amount": float(billing.amount)})
         return {"status": billing.status.value, "amount": float(billing.amount)}
+    except AppError as exc:
+        log_activity_error("run_billing_precheck", exc)
+        raise _non_retryable(exc) from exc
     except Exception as exc:
         log_activity_error("run_billing_precheck", exc)
         raise
@@ -247,6 +256,11 @@ async def release_slot(appointment_data: dict[str, Any]) -> dict[str, Any]:
         log_activity_step("Releasing slot", {"slot_id": appointment_data.get("slot_id")})
         slot = db.query(Slot).filter(Slot.id == appointment_data["slot_id"]).first()
         if slot:
+            appointment_id = appointment_data.get("appointment_id")
+            if appointment_id is not None:
+                appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+                if appointment and slot.patient_id != appointment.patient_id:
+                    return {"slot_released": False, "reason": "slot_owned_by_another_patient"}
             slot.status = SlotStatus.AVAILABLE
             slot.patient_id = None
             slot.updated_at = datetime.datetime.now(datetime.timezone.utc)
@@ -306,37 +320,48 @@ class AppointmentSagaWorkflow:
             validate_appointment_data,
             appointment_data,
             start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=BUSINESS_ACTIVITY_RETRY,
         )
         
         await workflow.execute_activity(
             reserve_slot,
             {**appointment_data, **validated},
             start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=BUSINESS_ACTIVITY_RETRY,
         )
 
         created = await workflow.execute_activity(
             create_pending_appointment,
             {**appointment_data, **validated},
             start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=TRANSIENT_ACTIVITY_RETRY,
         )
         appointment_id = created["appointment_id"]
-        await workflow.execute_activity(mark_slot_reserved, {**appointment_data, "appointment_id": appointment_id}, start_to_close_timeout=timedelta(seconds=30))
+        await workflow.execute_activity(
+            mark_slot_reserved,
+            {**appointment_data, "appointment_id": appointment_id},
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=TRANSIENT_ACTIVITY_RETRY,
+        )
 
         try:
             await workflow.execute_activity(
                 run_billing_precheck,
                 {**appointment_data, "appointment_id": appointment_id},
                 start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=BUSINESS_ACTIVITY_RETRY,
             )
             await workflow.execute_activity(
                 send_reminder,
                 {**appointment_data, "appointment_id": appointment_id},
                 start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=TRANSIENT_ACTIVITY_RETRY,
             )
             await workflow.execute_activity(
                 confirm_appointment,
                 {**appointment_data, "appointment_id": appointment_id},
                 start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=TRANSIENT_ACTIVITY_RETRY,
             )
             logger.info("Appointment saga workflow completed successfully", extra={"appointment_id": appointment_id})
             return {"workflow_status": "CONFIRMED", "appointment_id": appointment_id}
@@ -344,13 +369,15 @@ class AppointmentSagaWorkflow:
             logger.error("Appointment saga workflow failed, releasing slot", extra={"appointment_id": appointment_id}, exc_info=True)
             await workflow.execute_activity(
                 release_slot,
-                {**appointment_data, "slot_id": validated["slot_id"]},
+                {**appointment_data, "appointment_id": appointment_id, "slot_id": validated["slot_id"]},
                 start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=COMPENSATION_RETRY,
             )
             await workflow.execute_activity(
                 cancel_pending_appointment,
                 {**appointment_data, "appointment_id": appointment_id},
                 start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=COMPENSATION_RETRY,
             )
             raise
 
@@ -390,7 +417,7 @@ async def _run_appointment_saga_locally(appointment_data: dict[str, Any]) -> dic
         logger.info("Appointment record created (local)", extra={"appointment_id": appointment_id})
         await mark_slot_reserved({**appointment_data, "appointment_id": appointment_id})
     except Exception:
-        await release_slot({**appointment_data, "slot_id": validated["slot_id"]})
+        await release_slot({**appointment_data, "appointment_id": appointment_id, "slot_id": validated["slot_id"]})
         if appointment_id is not None:
             await cancel_pending_appointment({**appointment_data, "appointment_id": appointment_id})
         raise
@@ -404,7 +431,7 @@ async def _run_appointment_saga_locally(appointment_data: dict[str, Any]) -> dic
         logger.info("Appointment saga completed locally", extra={"appointment_id": appointment_id})
         return {"workflow_status": "CONFIRMED", "appointment_id": appointment_id}
     except Exception:
-        await release_slot({**appointment_data, "slot_id": validated["slot_id"]})
+        await release_slot({**appointment_data, "appointment_id": appointment_id, "slot_id": validated["slot_id"]})
         await cancel_pending_appointment({**appointment_data, "appointment_id": appointment_id})
         raise
 
@@ -418,7 +445,14 @@ async def run_appointment_saga(appointment_data: dict[str, Any]) -> dict[str, An
     except Exception:
         return await _run_appointment_saga_locally(appointment_data)
 
-    workflow_id = appointment_data.get("workflow_id") or f"appointment-booking-{appointment_data['patient_id']}-{appointment_data['slot_id']}-{uuid.uuid4()}"
+    workflow_id = appointment_data.get("workflow_id")
+    if not workflow_id:
+        idempotency_key = appointment_data.get("idempotency_key")
+        workflow_id = (
+            f"appointment-booking-{appointment_data['patient_id']}-{idempotency_key}"
+            if idempotency_key
+            else f"appointment-booking-{appointment_data['patient_id']}-{appointment_data['slot_id']}-{uuid.uuid4()}"
+        )
     handle = await client.start_workflow(
         AppointmentSagaWorkflow.run,
         {**appointment_data, "workflow_id": workflow_id},

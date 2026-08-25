@@ -30,7 +30,10 @@ from app.models import (
     SlotStatus,
     User,
     UserRole,
+    WaitlistEntry,
+    WaitlistStatus,
 )
+from app.repositories import AppointmentRepository
 from app.workflows.service_publish import chunk_service
 
 
@@ -662,20 +665,25 @@ def test_visit_lifecycle_transitions_are_idempotent(client):
 
     patient_token = _login(client, "patient@example.com", "secret123")
     patient_headers = {"Authorization": f"Bearer {patient_token}"}
+    patient_checkin = client.post(f"/api/v1/appointments/{appointment.id}/visit/check-in", headers=patient_headers)
+    assert patient_checkin.status_code == 403
 
-    first_checkin = client.post(f"/api/v1/appointments/{appointment.id}/visit/check-in", headers=patient_headers)
+    provider_token = _login(client, "provider@example.com", "secret123")
+    provider_headers = {"Authorization": f"Bearer {provider_token}"}
+
+    first_checkin = client.post(f"/api/v1/appointments/{appointment.id}/visit/check-in", headers=provider_headers)
     assert first_checkin.status_code == 200
     assert first_checkin.json()["visit_status"] == "CHECKED_IN"
 
-    repeated_checkin = client.post(f"/api/v1/appointments/{appointment.id}/visit/check-in", headers=patient_headers)
+    repeated_checkin = client.post(f"/api/v1/appointments/{appointment.id}/visit/check-in", headers=provider_headers)
     assert repeated_checkin.status_code == 200
     assert repeated_checkin.json()["visit_status"] == "CHECKED_IN"
 
-    start = client.post(f"/api/v1/appointments/{appointment.id}/visit/start", headers=patient_headers)
+    start = client.post(f"/api/v1/appointments/{appointment.id}/visit/start", headers=provider_headers)
     assert start.status_code == 200
     assert start.json()["visit_status"] == "IN_PROGRESS"
 
-    complete = client.post(f"/api/v1/appointments/{appointment.id}/visit/complete", headers=patient_headers)
+    complete = client.post(f"/api/v1/appointments/{appointment.id}/visit/complete", headers=provider_headers)
     assert complete.status_code == 200
     assert complete.json()["visit_status"] == "COMPLETED"
 
@@ -1072,7 +1080,7 @@ def test_visit_illegal_transition_is_rejected(client):
     headers = {"Authorization": f"Bearer {patient_token}"}
 
     response = client.post(f"/api/v1/appointments/{appointment.id}/visit/complete", headers=headers)
-    assert response.status_code == 409
+    assert response.status_code == 403
 
 
 def test_duplicate_registration_is_rejected(client):
@@ -1200,3 +1208,162 @@ def test_service_publish_starts_workflow_and_writes_chunks(client):
         assert result["specialty"] is None
     finally:
         settings.retrieval_min_similarity = original_min_similarity
+
+
+def test_cancelling_appointment_promotes_oldest_waitlisted_patient(client):
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        provider_user = User(email="provider@example.com", hashed_password="hash", role=UserRole.provider)
+        cancelled_patient_user = User(email="cancelled@example.com", hashed_password="hash", role=UserRole.patient)
+        waiting_patient_user = User(email="waiting@example.com", hashed_password="hash", role=UserRole.patient)
+        db.add_all([provider_user, cancelled_patient_user, waiting_patient_user])
+        db.flush()
+
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        cancelled_patient = Patient(user_id=cancelled_patient_user.id)
+        waiting_patient = Patient(user_id=waiting_patient_user.id)
+        department = Department(name="Cardiology", description="Heart care")
+        db.add_all([provider, cancelled_patient, waiting_patient, department])
+        db.flush()
+
+        service = Service(name="Checkup", department_id=department.id, is_published=True)
+        db.add(service)
+        db.flush()
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            patient_id=cancelled_patient.id,
+            status=SlotStatus.BOOKED,
+            start_datetime=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 2, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.flush()
+
+        appointment = Appointment(
+            patient_id=cancelled_patient.id,
+            provider_id=provider.id,
+            service_id=service.id,
+            slot_id=slot.id,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        db.add(appointment)
+        db.flush()
+        waitlist_entry = WaitlistEntry(slot_id=slot.id, patient_id=waiting_patient.id, status=WaitlistStatus.WAITING)
+        db.add(waitlist_entry)
+        db.commit()
+
+        cancelled = AppointmentRepository(db).cancel(appointment)
+
+        promoted = db.query(Appointment).filter(
+            Appointment.slot_id == slot.id,
+            Appointment.patient_id == waiting_patient.id,
+        ).one()
+        refreshed_slot = db.query(Slot).filter(Slot.id == slot.id).one()
+        refreshed_entry = db.query(WaitlistEntry).filter(WaitlistEntry.id == waitlist_entry.id).one()
+        assert cancelled.status == AppointmentStatus.CANCELLED
+        assert refreshed_slot.status == SlotStatus.RESERVED
+        assert refreshed_slot.patient_id == waiting_patient.id
+        assert refreshed_entry.status == WaitlistStatus.PROMOTED
+        assert promoted.status == AppointmentStatus.CONFIRMED
+    finally:
+        db.close()
+
+
+def test_cancel_api_books_oldest_waitlisted_patient_and_lists_appointment(client):
+    _create_user(client, "cancelled@example.com", "secret123", "patient")
+    _create_user(client, "first-waiting@example.com", "secret123", "patient")
+    _create_user(client, "second-waiting@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        cancelled_user = db.query(User).filter(User.email == "cancelled@example.com").one()
+        first_user = db.query(User).filter(User.email == "first-waiting@example.com").one()
+        second_user = db.query(User).filter(User.email == "second-waiting@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+        cancelled_patient = db.query(Patient).filter(Patient.user_id == cancelled_user.id).one()
+        first_patient = db.query(Patient).filter(Patient.user_id == first_user.id).one()
+        second_patient = db.query(Patient).filter(Patient.user_id == second_user.id).one()
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        department = Department(name="Cardiology", description="Heart care")
+        db.add_all([provider, department])
+        db.flush()
+        service = Service(name="Checkup", department_id=department.id, is_published=True)
+        db.add(service)
+        db.flush()
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            patient_id=cancelled_patient.id,
+            status=SlotStatus.BOOKED,
+            start_datetime=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 2, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.flush()
+        appointment = Appointment(
+            patient_id=cancelled_patient.id,
+            provider_id=provider.id,
+            service_id=service.id,
+            slot_id=slot.id,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        db.add(appointment)
+        db.flush()
+        base_time = datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc)
+        first_entry = WaitlistEntry(
+            slot_id=slot.id,
+            patient_id=first_patient.id,
+            status=WaitlistStatus.WAITING,
+            created_at=base_time,
+        )
+        second_entry = WaitlistEntry(
+            slot_id=slot.id,
+            patient_id=second_patient.id,
+            status=WaitlistStatus.WAITING,
+            created_at=base_time.replace(second=1),
+        )
+        db.add_all([first_entry, second_entry])
+        db.commit()
+        appointment_id = appointment.id
+        slot_id = slot.id
+        first_patient_id = first_patient.id
+        second_patient_id = second_patient.id
+    finally:
+        db.close()
+
+    cancelled_token = _login(client, "cancelled@example.com", "secret123")
+    cancel_response = client.post(
+        f"/api/v1/appointments/{appointment_id}/cancel",
+        headers={"Authorization": f"Bearer {cancelled_token}"},
+    )
+    assert cancel_response.status_code == 200
+
+    first_token = _login(client, "first-waiting@example.com", "secret123")
+    list_response = client.get(
+        "/api/v1/appointments",
+        headers={"Authorization": f"Bearer {first_token}"},
+    )
+    assert list_response.status_code == 200
+    items = list_response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["slot_id"] == slot_id
+    assert items[0]["status"] == "CONFIRMED"
+
+    db = SessionLocal()
+    try:
+        promoted_entry = db.query(WaitlistEntry).filter(WaitlistEntry.patient_id == first_patient_id).one()
+        waiting_entry = db.query(WaitlistEntry).filter(WaitlistEntry.patient_id == second_patient_id).one()
+        refreshed_slot = db.query(Slot).filter(Slot.id == slot_id).one()
+        assert promoted_entry.status == WaitlistStatus.PROMOTED
+        assert waiting_entry.status == WaitlistStatus.WAITING
+        assert refreshed_slot.patient_id == first_patient_id
+        assert refreshed_slot.status == SlotStatus.RESERVED
+    finally:
+        db.close()

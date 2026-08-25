@@ -26,6 +26,15 @@ def _ensure_provider_owns_appointment(appointment: Appointment, current_user: Us
         raise AppError("Forbidden", status_code=403, error_type="forbidden")
 
 
+def _ensure_visit_role(appointment: Appointment, current_user: User, db: Session, *, provider_only: bool = False) -> None:
+    if current_user.role == UserRole.provider:
+        _ensure_provider_owns_appointment(appointment, current_user, db)
+        return
+    allowed_roles = {UserRole.admin, UserRole.provider} if provider_only else {UserRole.admin, UserRole.front_desk, UserRole.provider}
+    if current_user.role not in allowed_roles:
+        raise AppError("Only authorized staff can update visit status", status_code=403, error_type="forbidden")
+
+
 @router.post("/waitlist/{slot_id}", response_model=WaitlistEntryRead, status_code=status.HTTP_201_CREATED)
 def join_waitlist(slot_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role != UserRole.patient:
@@ -144,6 +153,7 @@ async def create_appointment(
     workflow_payload = {
         "patient_id": patient.id,
         "slot_id": slot.id,
+        "idempotency_key": idempotency_key,
         **payload_data,
     }
 
@@ -335,6 +345,12 @@ def reschedule_appointment(
 
 
 def _transition_visit_status(appointment: Appointment, target_status: VisitStatus, db: Session) -> dict[str, str]:
+    if appointment.status != AppointmentStatus.CONFIRMED:
+        raise AppError(
+            f"Appointment {appointment.id} has status {appointment.status.value}; only CONFIRMED appointments can enter the visit workflow",
+            status_code=409,
+            error_type="conflict",
+        )
     if appointment.visit_status == target_status:
         return {"appointment_id": appointment.id, "visit_status": appointment.visit_status.value}
 
@@ -361,13 +377,7 @@ def check_in_visit(appointment_id: int, db: Session = Depends(get_db), current_u
     appointment = AppointmentRepository(db).get_by_id(appointment_id)
     if not appointment:
         raise AppError("Appointment not found", status_code=404, error_type="not_found")
-    _ensure_provider_owns_appointment(appointment, current_user, db)
-    if current_user.role == UserRole.patient:
-        patient = PatientRepository(db).get_by_user_id(current_user.id)
-        if not patient or appointment.patient_id != patient.id:
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
-    elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+    _ensure_visit_role(appointment, current_user, db)
 
     return _transition_visit_status(appointment, VisitStatus.CHECKED_IN, db)
 
@@ -377,13 +387,7 @@ def start_visit(appointment_id: int, db: Session = Depends(get_db), current_user
     appointment = AppointmentRepository(db).get_by_id(appointment_id)
     if not appointment:
         raise AppError("Appointment not found", status_code=404, error_type="not_found")
-    _ensure_provider_owns_appointment(appointment, current_user, db)
-    if current_user.role == UserRole.patient:
-        patient = PatientRepository(db).get_by_user_id(current_user.id)
-        if not patient or appointment.patient_id != patient.id:
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
-    elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+    _ensure_visit_role(appointment, current_user, db, provider_only=True)
 
     return _transition_visit_status(appointment, VisitStatus.IN_PROGRESS, db)
 
@@ -393,13 +397,7 @@ def complete_visit(appointment_id: int, db: Session = Depends(get_db), current_u
     appointment = AppointmentRepository(db).get_by_id(appointment_id)
     if not appointment:
         raise AppError("Appointment not found", status_code=404, error_type="not_found")
-    _ensure_provider_owns_appointment(appointment, current_user, db)
-    if current_user.role == UserRole.patient:
-        patient = PatientRepository(db).get_by_user_id(current_user.id)
-        if not patient or appointment.patient_id != patient.id:
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
-    elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+    _ensure_visit_role(appointment, current_user, db, provider_only=True)
 
     return _transition_visit_status(appointment, VisitStatus.COMPLETED, db)
 

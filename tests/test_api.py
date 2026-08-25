@@ -1086,7 +1086,7 @@ def test_service_list_handles_failed_publish_status(client):
     patient_headers = {"Authorization": f"Bearer {patient_token}"}
     public_response = client.get("/api/v1/public/services?limit=20&offset=0", headers=patient_headers)
     assert public_response.status_code == 200
-    assert any(item["id"] == service_id and item["status"] == "PUBLISH_FAILED" for item in public_response.json()["items"])
+    assert not any(item["id"] == service_id for item in public_response.json()["items"])
 
 
 def test_visit_illegal_transition_is_rejected(client):

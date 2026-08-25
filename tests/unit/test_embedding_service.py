@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 
 import pytest
 
@@ -78,3 +79,52 @@ def test_publish_embedding_activity_batches_chunks_in_order(monkeypatch):
     assert calls == [["chunk-0", "chunk-1"], ["chunk-2", "chunk-3"], ["chunk-4"]]
     assert [chunk["chunk_index"] for chunk in result] == list(range(5))
     assert [chunk["embedding"] for chunk in result] == [[0.0], [1.0], [0.0], [1.0], [0.0]]
+
+
+def test_publish_embedding_activity_reuses_unchanged_chunk(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.db import Base
+    from app.models import ContentChunk
+    from app.workflows import service_publish
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    unchanged_content = "unchanged"
+    unchanged_hash = hashlib.sha256(unchanged_content.encode("utf-8")).hexdigest()
+    session.add(ContentChunk(
+        service_id=7,
+        content_hash=unchanged_hash,
+        department="Cardiology",
+        specialty="Cardiac",
+        published=True,
+        source_type="service",
+        source_id=7,
+        chunk_index=0,
+        content=unchanged_content,
+        token_count=1,
+        embedding=[9.0] * 384,
+    ))
+    session.commit()
+
+    calls = []
+
+    async def fake_generate_embeddings(texts):
+        calls.append(texts)
+        return [[2.0] * 384 for _ in texts]
+
+    monkeypatch.setattr(service_publish.db_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(service_publish, "generate_embeddings", fake_generate_embeddings)
+    result = asyncio.run(service_publish.embed_chunks([
+        {"service_id": 7, "chunk_index": 0, "content": unchanged_content},
+        {"service_id": 7, "chunk_index": 1, "content": "changed"},
+    ]))
+
+    assert calls == [["changed"]]
+    assert list(result[0]["embedding"]) == [9.0] * 384
+    assert result[1]["embedding"] == [2.0] * 384
+    session.close()
+    Base.metadata.drop_all(bind=engine)

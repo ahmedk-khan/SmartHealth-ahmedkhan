@@ -13,6 +13,7 @@ class ContentChunk(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     service_id = Column(Integer, ForeignKey("services.id", ondelete="CASCADE"), nullable=False)
+    content_hash = Column(String(64), nullable=True, index=True)
     department = Column(String(120), nullable=False)
     specialty = Column(String(140), nullable=True)
     published = Column(Boolean, nullable=False, default=False)

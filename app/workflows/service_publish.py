@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 from typing import Any
 
 from datetime import timedelta
@@ -86,10 +87,12 @@ async def chunk_service(service_struct: dict[str, Any]) -> list[dict[str, Any]]:
     )
     chunk_size = 120
     for idx in range(0, max(len(description), 1), chunk_size):
+        content = f"{context}\n\n{description[idx : idx + chunk_size]}"
         chunks.append(
             {
                 "chunk_index": idx // chunk_size,
-                "content": f"{context}\n\n{description[idx : idx + chunk_size]}",
+            "content": content,
+            "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 "service_id": service_struct.get("service_id"),
                 "department": service_struct["department_name"],
                 "specialty": service_struct.get("specialty") or None,
@@ -104,14 +107,49 @@ async def embed_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not chunks:
         return []
 
+    service_id = chunks[0].get("service_id")
+    reusable = {}
+    if service_id is not None:
+        db: Session = db_module.SessionLocal()
+        try:
+            repository = ContentChunkRepository(db)
+            chunk_keys = [
+                (chunk["chunk_index"], chunk.get("content_hash") or hashlib.sha256(chunk["content"].encode("utf-8")).hexdigest())
+                for chunk in chunks
+            ]
+            reusable = repository.get_reusable_embeddings(service_id, chunk_keys)
+        finally:
+            db.close()
+
     batch_size = settings.embedding_batch_size
-    embedded_chunks: list[dict[str, Any]] = []
-    for start in range(0, len(chunks), batch_size):
-        batch = chunks[start : start + batch_size]
+    pending = []
+    for chunk in chunks:
+        content_hash = chunk.get("content_hash") or hashlib.sha256(chunk["content"].encode("utf-8")).hexdigest()
+        reusable_embedding = reusable.get((chunk["chunk_index"], content_hash))
+        if reusable_embedding is not None:
+            continue
+        else:
+            pending.append(chunk | {"content_hash": content_hash})
+
+    embedded_by_key = {}
+    for start in range(0, len(pending), batch_size):
+        batch = pending[start : start + batch_size]
         embeddings = await generate_embeddings([chunk["content"] for chunk in batch])
         if len(embeddings) != len(batch):
             raise AppError("Embedding provider returned an incomplete batch", status_code=502, error_type="embedding_batch_invalid")
-        embedded_chunks.extend(chunk | {"embedding": embedding} for chunk, embedding in zip(batch, embeddings))
+        embedded_by_key.update(
+            ((chunk["chunk_index"], chunk["content_hash"]), embedding)
+            for chunk, embedding in zip(batch, embeddings)
+        )
+
+    embedded_chunks = []
+    for chunk in chunks:
+        content_hash = chunk.get("content_hash") or hashlib.sha256(chunk["content"].encode("utf-8")).hexdigest()
+        key = (chunk["chunk_index"], content_hash)
+        embedding = reusable.get(key)
+        if embedding is None:
+            embedding = embedded_by_key[key]
+        embedded_chunks.append(chunk | {"content_hash": content_hash, "embedding": embedding})
     return embedded_chunks
 
 

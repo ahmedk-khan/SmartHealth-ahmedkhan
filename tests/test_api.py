@@ -1,7 +1,9 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import os
-from datetime import datetime, timezone
 
+
+from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -15,8 +17,8 @@ from app.core.security import get_password_hash
 from app.db import Base
 from app.main import app
 from app.models import (
-    Appointment,
     AppointmentStatus,
+    Appointment,
     AppointmentStatusHistory,
     Billing,
     BillingStatus,
@@ -94,6 +96,67 @@ def _create_user_record(email, password, role, first_name=None, last_name=None):
         db.commit()
         db.refresh(user)
         return user
+    finally:
+        db.close()
+
+
+def test_five_concurrent_bookings_allow_only_one_confirmed_appointment(client):
+    patient_emails = [f"concurrent-{index}@example.com" for index in range(5)]
+    for email in patient_emails:
+        _create_user(client, email, "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+        provider = Provider(user_id=provider_user.id, bio="General medicine")
+        department = Department(name="Concurrency", description="Concurrency test")
+        db.add_all([provider, department])
+        db.flush()
+        service = Service(name="Concurrent checkup", department_id=department.id, is_published=True)
+        db.add(service)
+        db.flush()
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        slot_id = slot.id
+    finally:
+        db.close()
+
+    tokens = [_login(client, email, "secret123") for email in patient_emails]
+
+    def book(token):
+        return client.post(
+            "/api/v1/appointments",
+            json={"slot_id": slot_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        responses = list(executor.map(book, tokens))
+
+    assert sum(response.status_code == 202 for response in responses) == 1
+    assert sum(response.status_code == 409 for response in responses) == 4
+    confirmed = [response.json() for response in responses if response.status_code == 202]
+    assert confirmed[0]["status"] == "CONFIRMED"
+    winning_patient_id = confirmed[0]["patient_id"]
+
+    db = SessionLocal()
+    try:
+        refreshed_slot = db.query(Slot).filter(Slot.id == slot_id).one()
+        appointments = db.query(Appointment).filter(Appointment.slot_id == slot_id).all()
+        assert refreshed_slot.status == SlotStatus.RESERVED
+        assert len(appointments) == 1
+        assert appointments[0].patient_id == winning_patient_id
+        assert appointments[0].status == AppointmentStatus.CONFIRMED
     finally:
         db.close()
 
@@ -589,6 +652,7 @@ def test_booking_is_idempotent_with_idempotency_key(client):
         db.refresh(slot)
     finally:
         db.close()
+
 
     patient_token = _login(client, "patient@example.com", "secret123")
     headers = {

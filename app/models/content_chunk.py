@@ -1,7 +1,7 @@
 import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -13,6 +13,9 @@ class ContentChunk(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     service_id = Column(Integer, ForeignKey("services.id", ondelete="CASCADE"), nullable=False)
+    department = Column(String(120), nullable=False)
+    specialty = Column(String(140), nullable=True)
+    published = Column(Boolean, nullable=False, default=False)
     source_type = Column(String(80), nullable=False, default="service")
     source_id = Column(Integer, nullable=False)
     chunk_index = Column(Integer, nullable=False)

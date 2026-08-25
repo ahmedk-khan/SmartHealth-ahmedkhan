@@ -11,6 +11,9 @@ class ContentChunkRepository(BaseRepository):
             [
                 ContentChunk(
                     service_id=service_id,
+                    department=chunk["department"],
+                    specialty=chunk.get("specialty"),
+                    published=chunk.get("published", False),
                     source_type=chunk.get("source_type", "service"),
                     source_id=chunk.get("source_id", service_id),
                     chunk_index=chunk["chunk_index"],
@@ -26,7 +29,7 @@ class ContentChunkRepository(BaseRepository):
         query = (
             self.db.query(ContentChunk, Service)
             .join(Service, ContentChunk.service_id == Service.id)
-            .filter(Service.is_published.is_(True), ContentChunk.embedding.is_not(None))
+            .filter(ContentChunk.published.is_(True), ContentChunk.embedding.is_not(None))
         )
         if self.db.bind.dialect.name == "postgresql":
             distance = ContentChunk.embedding.cosine_distance(query_embedding)

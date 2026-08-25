@@ -61,6 +61,7 @@ async def validate_service(service_id: int) -> dict[str, Any]:
 @activity.defn
 async def structure_service(service_data: dict[str, Any]) -> dict[str, Any]:
     return {
+        "service_id": service_data["id"],
         "title": service_data["name"],
         "description": service_data["description"],
         "specialty": service_data["specialty"],
@@ -89,6 +90,10 @@ async def chunk_service(service_struct: dict[str, Any]) -> list[dict[str, Any]]:
             {
                 "chunk_index": idx // chunk_size,
                 "content": f"{context}\n\n{description[idx : idx + chunk_size]}",
+                "service_id": service_struct.get("service_id"),
+                "department": service_struct["department_name"],
+                "specialty": service_struct.get("specialty") or None,
+                "published": True,
             }
         )
     return chunks

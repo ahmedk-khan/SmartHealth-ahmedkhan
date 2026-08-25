@@ -28,8 +28,8 @@ async def search_services(db: Session, query: str, limit: int) -> list[dict]:
             "service_id": service.id,
             "service_name": service.name,
             "score": round(score, 4),
-            "department": service.department.name,
-            "specialty": service.specialty,
+            "department": chunk.department,
+            "specialty": chunk.specialty,
             "content": chunk.content,
         }
         if len(best_by_service) >= limit:

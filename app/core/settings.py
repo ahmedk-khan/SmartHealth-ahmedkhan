@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
     embedding_model: str = Field(default="sentence-transformers/all-MiniLM-L6-v2", alias="EMBEDDING_MODEL")
     embedding_dimensions: int = Field(default=384, alias="EMBEDDING_DIMENSIONS")
+    embedding_batch_size: int = Field(default=32, ge=1, alias="EMBEDDING_BATCH_SIZE")
     retrieval_top_k: int = Field(default=5, alias="RETRIEVAL_TOP_K")
     retrieval_min_similarity: float = Field(default=0.65, alias="RETRIEVAL_MIN_SIMILARITY")
     allow_self_service_admin_registration: bool = Field(default=False, alias="ALLOW_SELF_SERVICE_ADMIN_REGISTRATION")

@@ -57,3 +57,24 @@ def test_provider_factory_builds_huggingface_provider(monkeypatch):
     assert isinstance(provider, HuggingFaceEmbeddingProvider)
     assert provider.model == "test-model"
     assert provider.dimensions == 8
+
+
+def test_publish_embedding_activity_batches_chunks_in_order(monkeypatch):
+    from app.core.settings import settings
+    from app.workflows import service_publish
+
+    calls = []
+
+    async def fake_generate_embeddings(texts):
+        calls.append(texts)
+        return [[float(index)] for index in range(len(texts))]
+
+    monkeypatch.setattr(settings, "embedding_batch_size", 2)
+    monkeypatch.setattr(service_publish, "generate_embeddings", fake_generate_embeddings)
+    chunks = [{"chunk_index": index, "content": f"chunk-{index}"} for index in range(5)]
+
+    result = asyncio.run(service_publish.embed_chunks(chunks))
+
+    assert calls == [["chunk-0", "chunk-1"], ["chunk-2", "chunk-3"], ["chunk-4"]]
+    assert [chunk["chunk_index"] for chunk in result] == list(range(5))
+    assert [chunk["embedding"] for chunk in result] == [[0.0], [1.0], [0.0], [1.0], [0.0]]

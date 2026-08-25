@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import os
+import time
 
 
 from datetime import datetime, timezone
@@ -1202,7 +1203,14 @@ def test_admin_self_registration_is_blocked_by_default(client):
     assert "disabled" in response.json()["error"]["message"].lower()
 
 
-def test_service_publish_starts_workflow_and_writes_chunks(client):
+def test_service_publish_starts_workflow_and_writes_chunks(client, monkeypatch):
+    async def temporal_unavailable(*args, **kwargs):
+        raise ConnectionError("Temporal unavailable in unit test")
+
+    from app.services import service_management
+
+    monkeypatch.setattr(service_management.temporal_client.Client, "connect", temporal_unavailable)
+
     _create_user_record("admin@example.com", "secret123", "admin")
     admin_token = _login(client, "admin@example.com", "secret123")
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
@@ -1234,12 +1242,20 @@ def test_service_publish_starts_workflow_and_writes_chunks(client):
     publish_payload = publish_response.json()
     assert publish_payload["workflow_id"] == f"service-publish-{service_id}"
 
-    status_response = client.get(f"/api/v1/services/{service_id}/publish-status", headers=admin_headers)
-    assert status_response.status_code == 200
-    status_payload = status_response.json()
+    deadline = time.monotonic() + 10
+    status_payload = None
+    while time.monotonic() < deadline:
+        status_response = client.get(f"/api/v1/services/{service_id}/publish-status", headers=admin_headers)
+        assert status_response.status_code == 200
+        status_payload = status_response.json()
+        if status_payload.get("status") == "PUBLISHED":
+            break
+        time.sleep(0.1)
+
+    assert status_payload is not None
     assert status_payload["workflow_id"] == f"service-publish-{service_id}"
-    assert status_payload["status"] in {"PUBLISHING", "PUBLISHED"}
-    assert status_payload["stage"] in {"EMBEDDING", "PERSISTING", "COMPLETE"}
+    assert status_payload["status"] == "PUBLISHED"
+    assert status_payload["stage"] == "COMPLETE"
     assert status_payload["chunks_total"] >= 1
     assert status_payload["embeddings_generated"] >= 1
 

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app import db as db_module
 from app.core.exceptions import AppError
+from app.core.settings import settings
 from app.models import ServiceStatus
 from app.repositories import ContentChunkRepository, ServiceRepository
 from app.services.embedding_service import generate_embeddings
@@ -95,8 +96,18 @@ async def chunk_service(service_struct: dict[str, Any]) -> list[dict[str, Any]]:
 
 @activity.defn
 async def embed_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    embeddings = await generate_embeddings([chunk["content"] for chunk in chunks])
-    return [chunk | {"embedding": embedding} for chunk, embedding in zip(chunks, embeddings)]
+    if not chunks:
+        return []
+
+    batch_size = settings.embedding_batch_size
+    embedded_chunks: list[dict[str, Any]] = []
+    for start in range(0, len(chunks), batch_size):
+        batch = chunks[start : start + batch_size]
+        embeddings = await generate_embeddings([chunk["content"] for chunk in batch])
+        if len(embeddings) != len(batch):
+            raise AppError("Embedding provider returned an incomplete batch", status_code=502, error_type="embedding_batch_invalid")
+        embedded_chunks.extend(chunk | {"embedding": embedding} for chunk, embedding in zip(batch, embeddings))
+    return embedded_chunks
 
 
 @activity.defn

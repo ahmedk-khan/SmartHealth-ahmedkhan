@@ -106,6 +106,14 @@ def get_embedding_provider() -> EmbeddingProvider:
         )
     return HuggingFaceEmbeddingProvider(api_key, settings.embedding_model, settings.embedding_dimensions)
 
+def embedding_model_id() -> str:
+    """Return the identity stored with vectors so providers cannot be mixed."""
+    api_key = _configured_api_key()
+    if not api_key:
+        return f"fake:{settings.embedding_dimensions}"
+    provider = settings.embedding_provider.split("#", 1)[0].strip().lower()
+    return f"{provider}:{settings.embedding_model}:{settings.embedding_dimensions}"
+
 
 async def generate_embeddings(texts: list[str]) -> list[list[float]]:
     if not texts:

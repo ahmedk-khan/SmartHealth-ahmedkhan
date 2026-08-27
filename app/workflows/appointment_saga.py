@@ -1,10 +1,12 @@
 import datetime
+import asyncio
 import logging
 import uuid
 from datetime import timedelta
 from typing import Any
 
 from temporalio import activity, workflow
+from temporalio.client import WorkflowFailureError
 from temporalio import client as temporal_client
 from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
 from temporalio.exceptions import ApplicationError
@@ -18,7 +20,7 @@ from app.repositories.slots import SlotRepository
 from app.workflows.temporal_logging import setup_activity_context, log_activity_step, log_activity_error
 from app.core.settings import settings
 from app.services.billing_checker import BillingChecker
-from app.workflows.temporal_policies import BUSINESS_ACTIVITY_RETRY, COMPENSATION_RETRY, TRANSIENT_ACTIVITY_RETRY
+from app.workflows.temporal_policies import BUSINESS_ACTIVITY_RETRY, COMPENSATION_RETRY, TRANSIENT_ACTIVITY_RETRY, WORKER_INTERRUPTION_RETRY
 
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,16 @@ async def validate_appointment_data(appointment_data: dict[str, Any]) -> dict[st
         raise _non_retryable(exc) from exc
     finally:
         db.close()
+
+
+@activity.defn
+async def wait_for_worker_interruption(appointment_data: dict[str, Any]) -> dict[str, Any]:
+    """Keep the demo booking pending until this worker is interrupted."""
+    if activity.info().attempt > 1:
+        return {"worker_restarted": True}
+    while True:
+        activity.heartbeat(appointment_data.get("slot_id"))
+        await asyncio.sleep(1)
 
 
 @activity.defn
@@ -153,6 +165,11 @@ async def create_pending_appointment(appointment_data: dict[str, Any]) -> dict[s
     setup_activity_context(appointment_data, "create_pending_appointment")
     db: Session = db_module.SessionLocal()
     try:
+        existing_id = appointment_data.get("appointment_id")
+        if existing_id:
+            existing = db.query(Appointment).filter(Appointment.id == existing_id).first()
+            if existing:
+                return {"appointment_id": existing.id}
         booking_key = appointment_data.get("idempotency_key")
         if booking_key:
             existing = db.query(Appointment).filter(Appointment.booking_key == booking_key).first()
@@ -343,21 +360,34 @@ class AppointmentSagaWorkflow:
                             patient_id, slot_id, and optionally correlation_id and request_id
         """
         logger.info("Starting appointment saga workflow", extra={"appointment_data": appointment_data})
+
+        if settings.booking_demo_pause_seconds:
+            await workflow.sleep(settings.booking_demo_pause_seconds)
         
-        # Ensure correlation_id is passed through all activities
-        validated = await workflow.execute_activity(
-            validate_appointment_data,
-            appointment_data,
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=BUSINESS_ACTIVITY_RETRY,
-        )
-        
-        await workflow.execute_activity(
-            reserve_slot,
-            {**appointment_data, **validated},
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=BUSINESS_ACTIVITY_RETRY,
-        )
+        try:
+            # Ensure correlation_id is passed through all activities
+            validated = await workflow.execute_activity(
+                validate_appointment_data,
+                appointment_data,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=BUSINESS_ACTIVITY_RETRY,
+            )
+
+            await workflow.execute_activity(
+                reserve_slot,
+                {**appointment_data, **validated},
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=BUSINESS_ACTIVITY_RETRY,
+            )
+        except Exception:
+            if appointment_data.get("appointment_id"):
+                await workflow.execute_activity(
+                    cancel_pending_appointment,
+                    appointment_data,
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=COMPENSATION_RETRY,
+                )
+            raise
 
         created = await workflow.execute_activity(
             create_pending_appointment,
@@ -477,11 +507,23 @@ async def run_appointment_saga(appointment_data: dict[str, Any]) -> dict[str, An
     if settings.app_env == "local":
         return await _run_appointment_saga_locally(appointment_data)
 
+    handle = await start_appointment_saga(appointment_data)
+    try:
+        return await handle.result()
+    except WorkflowFailureError as exc:
+        cause = exc.cause
+        while cause is not None:
+            if isinstance(cause, ApplicationError) and cause.type == "conflict":
+                raise AppError("Slot is no longer available", status_code=409, error_type="conflict") from exc
+            cause = getattr(cause, "cause", None)
+        raise
+
+
+async def start_appointment_saga(appointment_data: dict[str, Any]):
     try:
         client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
     except Exception as exc:
         raise AppError("Temporal workflow service is unavailable", status_code=503, error_type="workflow_unavailable") from exc
-
     workflow_id = appointment_data.get("workflow_id")
     if not workflow_id:
         idempotency_key = appointment_data.get("idempotency_key")
@@ -495,7 +537,8 @@ async def run_appointment_saga(appointment_data: dict[str, Any]) -> dict[str, An
         {**appointment_data, "workflow_id": workflow_id},
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
+        execution_timeout=timedelta(minutes=settings.booking_workflow_timeout_minutes),
         id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
         id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
     )
-    return await handle.result()
+    return handle

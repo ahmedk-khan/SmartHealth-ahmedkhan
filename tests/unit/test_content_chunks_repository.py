@@ -32,8 +32,8 @@ def test_replace_for_service_reindexes_vectors_without_duplicates():
         repository.replace_for_service(
             service.id,
             [
-                {"chunk_index": 0, "content": "old one", "department": "Cardiology", "specialty": "Cardiac", "published": True, "embedding": [1.0] * 384},
-                {"chunk_index": 1, "content": "old two", "department": "Cardiology", "specialty": "Cardiac", "published": True, "embedding": [1.0] * 384},
+                {"chunk_index": 0, "content": "old one", "department": "Cardiology", "specialty": "Cardiac", "published": True, "embedding": [1.0] * 1024},
+                {"chunk_index": 1, "content": "old two", "department": "Cardiology", "specialty": "Cardiac", "published": True, "embedding": [1.0] * 1024},
             ],
         )
         session.commit()
@@ -41,7 +41,7 @@ def test_replace_for_service_reindexes_vectors_without_duplicates():
         repository.replace_for_service(
             service.id,
             [
-                {"chunk_index": 0, "content": "new one", "department": "Cardiology", "specialty": "Electrophysiology", "published": True, "embedding": [2.0] * 384},
+                {"chunk_index": 0, "content": "new one", "department": "Cardiology", "specialty": "Electrophysiology", "published": True, "embedding": [2.0] * 1024},
             ],
         )
         session.commit()
@@ -69,7 +69,7 @@ def test_failed_republish_rolls_back_without_partial_chunks():
         session.add(service)
         session.flush()
         repository = ContentChunkRepository(session)
-        vector = [1.0] * 384
+        vector = [1.0] * 1024
         repository.replace_for_service(service.id, [{"chunk_index": 0, "content": "old", "department": "Rollback", "embedding": vector}])
         session.commit()
 

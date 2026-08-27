@@ -5,7 +5,7 @@ from app.repositories.base import BaseRepository
 
 
 class ContentChunkRepository(BaseRepository):
-    def get_reusable_embeddings(self, service_id: int, chunk_keys: list[tuple[int, str]]) -> dict[tuple[int, str], list[float]]:
+    def get_reusable_embeddings(self, service_id: int, chunk_keys: list[tuple[int, str]], embedding_model: str) -> dict[tuple[int, str], list[float]]:
         if not chunk_keys:
             return {}
         chunk_indexes = [chunk_index for chunk_index, _ in chunk_keys]
@@ -15,6 +15,7 @@ class ContentChunkRepository(BaseRepository):
             ContentChunk.chunk_index.in_(chunk_indexes),
             ContentChunk.content_hash.in_(content_hashes),
             ContentChunk.embedding.is_not(None),
+            ContentChunk.embedding_model == embedding_model,
         ).all()
         requested = set(chunk_keys)
         return {

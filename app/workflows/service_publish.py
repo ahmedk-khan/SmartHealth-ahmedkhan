@@ -12,7 +12,7 @@ from app.core.exceptions import AppError
 from app.core.settings import settings
 from app.models import ServiceStatus
 from app.repositories import ContentChunkRepository, ServiceRepository
-from app.services.embedding_service import generate_embeddings
+from app.services.embedding_service import embedding_model_id, generate_embeddings
 from app.workflows.temporal_policies import BUSINESS_ACTIVITY_RETRY, TRANSIENT_ACTIVITY_RETRY
 
 
@@ -107,6 +107,7 @@ async def embed_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not chunks:
         return []
 
+    model_id = embedding_model_id()
     service_id = chunks[0].get("service_id")
     reusable = {}
     if service_id is not None:
@@ -117,7 +118,7 @@ async def embed_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 (chunk["chunk_index"], chunk.get("content_hash") or hashlib.sha256(chunk["content"].encode("utf-8")).hexdigest())
                 for chunk in chunks
             ]
-            reusable = repository.get_reusable_embeddings(service_id, chunk_keys)
+            reusable = repository.get_reusable_embeddings(service_id, chunk_keys, model_id)
         finally:
             db.close()
 
@@ -149,7 +150,7 @@ async def embed_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         embedding = reusable.get(key)
         if embedding is None:
             embedding = embedded_by_key[key]
-        embedded_chunks.append(chunk | {"content_hash": content_hash, "embedding": embedding})
+        embedded_chunks.append(chunk | {"content_hash": content_hash, "embedding": embedding, "embedding_model": model_id})
     return embedded_chunks
 
 

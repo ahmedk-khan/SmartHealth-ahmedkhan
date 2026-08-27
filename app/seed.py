@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta, timezone
+from sqlalchemy import or_
 #seed 
 from app.db import SessionLocal
 from app.models import Department, Patient, Provider, Service, Slot, SlotStatus, User, UserRole
 from app.models import ContentChunk
 from app.core.security import get_password_hash
 from app.services.embedding_service import generate_embeddings
+from app.services.embedding_service import embedding_model_id, generate_embeddings
 import asyncio
 import hashlib
 
@@ -15,8 +17,17 @@ def seed() -> None:
     def ensure_user(email: str, password: str, role: UserRole) -> User:
         existing_user = db.query(User).filter(User.email == email).first()
         if existing_user:
+            if not existing_user.is_active:
+                existing_user.is_active = True
+                db.commit()
+                db.refresh(existing_user)
             return existing_user
-        user = User(email=email, hashed_password=get_password_hash(password), role=role)
+        user = User(
+            email=email,
+            hashed_password=get_password_hash(password),
+            role=role,
+            is_active=True,
+        )
         db.add(user)
         db.commit()
         db.refresh(user)
@@ -65,6 +76,7 @@ def seed() -> None:
             content = "\n".join((service.description or "", service.preparation_instructions or ""))
             chunks = [content[index : index + 120] for index in range(0, max(len(content), 1), 120)]
             embeddings = asyncio.run(generate_embeddings(chunks))
+            model_id = embedding_model_id()
             db.add_all([
                 ContentChunk(
                     service_id=service.id,
@@ -78,9 +90,27 @@ def seed() -> None:
                     content_hash=hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
                     token_count=len(chunk.split()),
                     embedding=embedding,
+                    embedding_model=model_id,
                 )
                 for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
             ])
+            db.commit()
+
+        model_id = embedding_model_id()
+        stale_chunks = (
+            db.query(ContentChunk)
+            .join(Service, ContentChunk.service_id == Service.id)
+            .filter(
+                Service.is_published.is_(True),
+                or_(ContentChunk.embedding_model.is_(None), ContentChunk.embedding_model != model_id),
+            )
+            .all()
+        )
+        if stale_chunks:
+            embeddings = asyncio.run(generate_embeddings([chunk.content for chunk in stale_chunks]))
+            for chunk, embedding in zip(stale_chunks, embeddings):
+                chunk.embedding = embedding
+                chunk.embedding_model = model_id
             db.commit()
 
         missing_chunks = db.query(Service.id).filter(Service.is_published.is_(True), ~Service.content_chunks.any()).all()

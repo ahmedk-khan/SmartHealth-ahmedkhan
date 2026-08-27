@@ -106,7 +106,8 @@ def test_publish_embedding_activity_reuses_unchanged_chunk(monkeypatch):
         chunk_index=0,
         content=unchanged_content,
         token_count=1,
-        embedding=[9.0] * 384,
+        embedding=[9.0] * 1024,
+        embedding_model=service_publish.embedding_model_id(),
     ))
     session.commit()
 
@@ -114,7 +115,7 @@ def test_publish_embedding_activity_reuses_unchanged_chunk(monkeypatch):
 
     async def fake_generate_embeddings(texts):
         calls.append(texts)
-        return [[2.0] * 384 for _ in texts]
+        return [[2.0] * 1024 for _ in texts]
 
     monkeypatch.setattr(service_publish.db_module, "SessionLocal", lambda: session)
     monkeypatch.setattr(service_publish, "generate_embeddings", fake_generate_embeddings)
@@ -124,7 +125,7 @@ def test_publish_embedding_activity_reuses_unchanged_chunk(monkeypatch):
     ]))
 
     assert calls == [["changed"]]
-    assert list(result[0]["embedding"]) == [9.0] * 384
-    assert result[1]["embedding"] == [2.0] * 384
+    assert list(result[0]["embedding"]) == [9.0] * 1024
+    assert result[1]["embedding"] == [2.0] * 1024
     session.close()
     Base.metadata.drop_all(bind=engine)

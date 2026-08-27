@@ -22,7 +22,7 @@ class ContentChunk(Base):
     chunk_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
     token_count = Column(Integer, nullable=False, default=0)
-    embedding = Column(Vector(384), nullable=True)
+    embedding = Column(Vector(1024), nullable=True)
     embedded_at = Column(DateTime(timezone=True), nullable=True)
     embedding_model = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)

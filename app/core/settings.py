@@ -26,11 +26,14 @@ class Settings(BaseSettings):
     kafka_topic_prefix: str = Field(default="app", alias="KAFKA_TOPIC_PREFIX")
     embedding_provider: str = Field(default="huggingface", alias="EMBEDDING_PROVIDER")
     embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
-    embedding_model: str = Field(default="sentence-transformers/all-MiniLM-L6-v2", alias="EMBEDDING_MODEL")
-    embedding_dimensions: int = Field(default=384, alias="EMBEDDING_DIMENSIONS")
+    embedding_model: str = Field(default="microsoft/harrier-oss-v1-0.6b", alias="EMBEDDING_MODEL")
+    embedding_dimensions: int = Field(default=1024, alias="EMBEDDING_DIMENSIONS")
     embedding_batch_size: int = Field(default=32, ge=1, alias="EMBEDDING_BATCH_SIZE")
     retrieval_top_k: int = Field(default=5, alias="RETRIEVAL_TOP_K")
-    retrieval_min_similarity: float = Field(default=0.65, alias="RETRIEVAL_MIN_SIMILARITY")
+    retrieval_min_similarity: float = Field(default=0.60, alias="RETRIEVAL_MIN_SIMILARITY")
+    booking_demo_pause_seconds: float = Field(default=0, ge=0, le=300, alias="BOOKING_DEMO_PAUSE_SECONDS")
+    async_booking_enabled: bool = Field(default=False, alias="ASYNC_BOOKING_ENABLED")
+    booking_workflow_timeout_minutes: int = Field(default=30, ge=1, le=1440, alias="BOOKING_WORKFLOW_TIMEOUT_MINUTES")
     allow_self_service_admin_registration: bool = Field(default=False, alias="ALLOW_SELF_SERVICE_ADMIN_REGISTRATION")
 
     @model_validator(mode="after")
@@ -42,4 +45,5 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
 
+settings = Settings()
 settings = Settings()

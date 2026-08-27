@@ -28,7 +28,7 @@ def test_search_applies_top_k_threshold_and_published_scope(monkeypatch):
         ]
         session.add_all(services)
         session.flush()
-        vectors = [[1.0] * 384, [1.0] * 192 + [0.0] * 192, [1.0] * 384]
+        vectors = [[1.0] * 1024, [1.0] * 512 + [0.0] * 512, [1.0] * 1024]
         for service, vector in zip(services, vectors):
             session.add(ContentChunk(
                 service_id=service.id,
@@ -45,7 +45,7 @@ def test_search_applies_top_k_threshold_and_published_scope(monkeypatch):
         session.commit()
 
         async def fake_generate_embeddings(texts):
-            return [[1.0] * 384 for _ in texts]
+            return [[1.0] * 1024 for _ in texts]
 
         monkeypatch.setattr(search_service, "generate_embeddings", fake_generate_embeddings)
         from app.core.settings import settings

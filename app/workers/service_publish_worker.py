@@ -18,6 +18,7 @@ from app.workflows.appointment_saga import (
     send_reminder,
     cancel_reminder,
     validate_appointment_data,
+    wait_for_worker_interruption,
 )
 
 
@@ -68,6 +69,7 @@ def main() -> None:
                 release_slot,
                 cancel_pending_appointment,
                 create_pending_appointment,
+                wait_for_worker_interruption,
             ],
         )
         await temporal_worker.run()

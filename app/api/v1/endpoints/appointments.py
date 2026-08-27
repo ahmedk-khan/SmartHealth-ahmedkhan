@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import AppError
 from app.core.idempotency import idempotency_store
+from app.core.settings import settings
 from app.models import Appointment, AppointmentStatus, Provider, SlotStatus, User, UserRole, VisitStatus
 from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead, PaginatedResponse, WaitlistEntryRead
 from app.repositories import AppointmentRepository, PatientRepository, SlotRepository, WaitlistRepository
@@ -147,6 +148,27 @@ async def create_appointment(
         "idempotency_key": idempotency_key,
         **payload_data,
     }
+
+    if settings.async_booking_enabled:
+        try:
+            appointment = appointment_repository.create_pending(
+                patient_id=patient.id,
+                provider_id=slot.provider_id,
+                service_id=slot.service_id,
+                slot_id=slot.id,
+                booking_key=idempotency_key,
+            )
+            workflow_payload["appointment_id"] = appointment.id
+            from app.workflows.appointment_saga import start_appointment_saga
+            await start_appointment_saga(workflow_payload)
+        except Exception as exc:
+            db.rollback()
+            if idempotency_key:
+                idempotency_store.delete(current_user.id, idempotency_key)
+            raise AppError("Failed to start appointment workflow", status_code=503, error_type="workflow_unavailable", detail=str(exc)) from exc
+        if idempotency_key:
+            idempotency_store.set(current_user.id, idempotency_key, {"appointment_id": appointment.id})
+        return appointment
 
     try:
         workflow_result = await run_appointment_saga(workflow_payload)

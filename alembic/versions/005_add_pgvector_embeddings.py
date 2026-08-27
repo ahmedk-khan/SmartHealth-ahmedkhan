@@ -13,7 +13,7 @@ depends_on = None
 def upgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
         op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    op.add_column("content_chunks", sa.Column("embedding", Vector(384), nullable=True))
+    op.add_column("content_chunks", sa.Column("embedding", Vector(1024), nullable=True))
     op.create_index(
         "ix_content_chunks_embedding_hnsw",
         "content_chunks",

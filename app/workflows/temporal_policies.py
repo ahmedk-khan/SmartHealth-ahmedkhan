@@ -23,3 +23,9 @@ COMPENSATION_RETRY = RetryPolicy(
     maximum_attempts=5,
     non_retryable_error_types=["AppError"],
 )
+
+WORKER_INTERRUPTION_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=1),
+    maximum_interval=timedelta(seconds=5),
+    maximum_attempts=3,
+)

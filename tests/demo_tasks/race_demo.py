@@ -1,9 +1,11 @@
 """Demonstrate that concurrent booking requests cannot double-book a slot.
 
-Run from the project directory:
+Run from the project directory in the terminal"
     python tests/demo_tasks/race_demo.py
 
 The script creates five temporary patients, races their requests against one
+
+
 available slot, and exits with an error unless exactly one booking succeeds.
 """
 

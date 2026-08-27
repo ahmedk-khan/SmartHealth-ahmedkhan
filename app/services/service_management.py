@@ -1,4 +1,5 @@
 import uuid
+from datetime import timedelta
 from typing import Any
 
 from temporalio import client as temporal_client
@@ -7,6 +8,7 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from app.core.exceptions import AppError
 from app.core.settings import settings
+from app.workflows.temporal_policies import WORKFLOW_RETRY
 from app.models import Provider, ServiceStatus, User, UserRole, provider_services
 from app.repositories import ServiceRepository
 from app.services.base import BaseService
@@ -108,6 +110,8 @@ class ServiceManagementService(BaseService):
                 service.id,
                 id=workflow_id,
                 task_queue=settings.temporal_task_queue,
+                execution_timeout=timedelta(minutes=settings.temporal_workflow_timeout_minutes),
+                retry_policy=WORKFLOW_RETRY,
                 id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
                 id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
             )

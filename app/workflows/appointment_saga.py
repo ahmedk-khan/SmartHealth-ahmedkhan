@@ -20,7 +20,7 @@ from app.repositories.slots import SlotRepository
 from app.workflows.temporal_logging import setup_activity_context, log_activity_step, log_activity_error
 from app.core.settings import settings
 from app.services.billing_checker import BillingChecker
-from app.workflows.temporal_policies import BUSINESS_ACTIVITY_RETRY, COMPENSATION_RETRY, TRANSIENT_ACTIVITY_RETRY, WORKER_INTERRUPTION_RETRY
+from app.workflows.temporal_policies import BUSINESS_ACTIVITY_RETRY, COMPENSATION_RETRY, TRANSIENT_ACTIVITY_RETRY, WORKFLOW_RETRY, WORKER_INTERRUPTION_RETRY
 
 
 logger = logging.getLogger(__name__)
@@ -538,6 +538,7 @@ async def start_appointment_saga(appointment_data: dict[str, Any]):
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
         execution_timeout=timedelta(minutes=settings.booking_workflow_timeout_minutes),
+        retry_policy=WORKFLOW_RETRY,
         id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
         id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
     )

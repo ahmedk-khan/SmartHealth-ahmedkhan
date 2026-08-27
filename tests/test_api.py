@@ -623,6 +623,7 @@ def test_appointment_saga_endpoints_create_state_cancel_and_reschedule(client):
     state_response = client.get(f"/api/v1/appointments/{appointment_id}/state", headers=patient_headers)
     assert state_response.status_code == 200
     assert state_response.json()["status"] == "CONFIRMED"
+    assert state_response.json()["visit_status"] == "NOT_STARTED"
 
     reschedule_response = client.post(
         f"/api/v1/appointments/{appointment_id}/reschedule",

@@ -146,6 +146,7 @@ async def create_appointment(
         "patient_id": patient.id,
         "slot_id": slot.id,
         "idempotency_key": idempotency_key,
+        "correlation_id": correlation_id,
         **payload_data,
     }
 
@@ -245,7 +246,12 @@ def list_appointments(
 
 
 @router.get("/{appointment_id}/state", response_model=dict)
-def get_appointment_state(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_appointment_state(
+    appointment_id: int,
+    correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     appointment_repository = AppointmentRepository(db)
     appointment = appointment_repository.get_by_id(appointment_id)
     if not appointment:
@@ -259,7 +265,12 @@ def get_appointment_state(appointment_id: int, db: Session = Depends(get_db), cu
     elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
         raise AppError("Forbidden", status_code=403, error_type="forbidden")
 
-    return {"id": appointment.id, "status": appointment.status.value, "slot_id": appointment.slot_id}
+    return {
+        "id": appointment.id,
+        "status": appointment.status.value,
+        "visit_status": appointment.visit_status.value,
+        "slot_id": appointment.slot_id,
+    }
 
 
 @router.post("/{appointment_id}/cancel", response_model=AppointmentRead)
@@ -377,7 +388,12 @@ def _transition_visit_status(appointment: Appointment, target_status: VisitStatu
 
 
 @router.post("/{appointment_id}/visit/check-in", response_model=dict)
-def check_in_visit(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def check_in_visit(
+    appointment_id: int,
+    correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     appointment = AppointmentRepository(db).get_by_id(appointment_id)
     if not appointment:
         raise AppError("Appointment not found", status_code=404, error_type="not_found")
@@ -387,7 +403,12 @@ def check_in_visit(appointment_id: int, db: Session = Depends(get_db), current_u
 
 
 @router.post("/{appointment_id}/visit/start", response_model=dict)
-def start_visit(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def start_visit(
+    appointment_id: int,
+    correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     appointment = AppointmentRepository(db).get_by_id(appointment_id)
     if not appointment:
         raise AppError("Appointment not found", status_code=404, error_type="not_found")
@@ -397,7 +418,12 @@ def start_visit(appointment_id: int, db: Session = Depends(get_db), current_user
 
 
 @router.post("/{appointment_id}/visit/complete", response_model=dict)
-def complete_visit(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def complete_visit(
+    appointment_id: int,
+    correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     appointment = AppointmentRepository(db).get_by_id(appointment_id)
     if not appointment:
         raise AppError("Appointment not found", status_code=404, error_type="not_found")

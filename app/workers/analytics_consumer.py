@@ -37,7 +37,6 @@ class AnalyticsConsumer:
             enable_auto_commit=False,
             group_id=self.consumer_group,
             value_deserializer=lambda value: json.loads(value.decode("utf-8")),
-            consumer_timeout_ms=1000,
         )
         return self._consumer
 

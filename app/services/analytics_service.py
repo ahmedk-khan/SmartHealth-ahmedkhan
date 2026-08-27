@@ -8,6 +8,41 @@ from app.services.base import BaseService
 
 
 class AnalyticsService(BaseService):
+    def _raw_dashboard_metrics(self, start_date: str | None = None, end_date: str | None = None) -> dict[str, int | float]:
+        appointments = self.db.query(Appointment)
+        if start_date:
+            appointments = appointments.filter(func.date(Appointment.created_at) >= datetime.date.fromisoformat(start_date))
+        if end_date:
+            appointments = appointments.filter(func.date(Appointment.created_at) <= datetime.date.fromisoformat(end_date))
+
+        appointments_total = appointments.count()
+        cancelled_appointments_total = appointments.filter(Appointment.status == AppointmentStatus.CANCELLED).count()
+        completed_visits_total = appointments.filter(Appointment.visit_status == VisitStatus.COMPLETED).count()
+        patients_total = self.db.query(func.count(Patient.id)).scalar() or 0
+        wait_query = self.db.query(Visit.checked_in_at, Slot.start_datetime).join(
+            Appointment, Appointment.id == Visit.appointment_id,
+        ).join(Slot, Slot.id == Appointment.slot_id).filter(
+            Visit.checked_in_at.isnot(None),
+        )
+        if start_date:
+            wait_query = wait_query.filter(func.date(Appointment.created_at) >= datetime.date.fromisoformat(start_date))
+        if end_date:
+            wait_query = wait_query.filter(func.date(Appointment.created_at) <= datetime.date.fromisoformat(end_date))
+        wait_rows = wait_query.all()
+        average_wait_seconds = (
+            sum((checked_in_at - scheduled_at).total_seconds() for checked_in_at, scheduled_at in wait_rows) / len(wait_rows)
+            if wait_rows else 0.0
+        )
+        return {
+            "appointments_total": int(appointments_total),
+            "patients_total": int(patients_total),
+            "completed_visits_total": int(completed_visits_total),
+            "cancelled_appointments_total": int(cancelled_appointments_total),
+            "cancellation_rate": cancelled_appointments_total / appointments_total if appointments_total else 0.0,
+            "average_wait_seconds": float(average_wait_seconds),
+            "failed_workflows_total": int(self.db.query(func.count(FailedJob.id)).scalar() or 0),
+        }
+
     def rollup_daily_metrics(self, day: str | None = None) -> dict[str, object]:
         try:
             target_day = datetime.date.fromisoformat(day) if day else datetime.date.today()
@@ -54,6 +89,8 @@ class AnalyticsService(BaseService):
         if end_date:
             daily = daily.filter(AnalyticsDaily.date <= datetime.date.fromisoformat(end_date))
         daily_rows = daily.subquery()
+        if not self.db.query(daily_rows.c.date).first():
+            return self._raw_dashboard_metrics(start_date, end_date)
         appointments_total = self.db.query(func.coalesce(func.sum(daily_rows.c.appointments_booked), 0)).scalar() or 0
         cancelled_appointments_total = self.db.query(func.coalesce(func.sum(daily_rows.c.cancellations), 0)).scalar() or 0
         completed_visits_total = self.db.query(func.coalesce(func.sum(daily_rows.c.completed_visits), 0)).scalar() or 0

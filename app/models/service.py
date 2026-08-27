@@ -1,7 +1,7 @@
 import datetime
 from enum import Enum
 
-from sqlalchemy import Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Integer, Numeric, String, Table, Text
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship
 
@@ -21,6 +21,7 @@ class ServiceStatus(str, Enum):
     PUBLISHED = "PUBLISHED"
     UNPUBLISHING = "UNPUBLISHING"
     UNPUBLISHED = "UNPUBLISHED"
+    PUBLISH_FAILED = "PUBLISH_FAILED"
 
 
 class Service(Base):
@@ -29,9 +30,13 @@ class Service(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(length=140), nullable=False, index=True)
     description = Column(Text, nullable=True)
+    specialty = Column(String(length=140), nullable=True)
+    preparation_instructions = Column(Text, nullable=True)
+    published_at = Column(DateTime(timezone=True), nullable=True)
+    price = Column(Numeric(10, 2), nullable=False, default=0)
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=False)
     is_published = Column(Boolean, nullable=False, default=False)
-    status = Column(SAEnum(ServiceStatus), nullable=False, default=ServiceStatus.DRAFT)
+    status = Column(SAEnum(ServiceStatus), nullable=False, default=ServiceStatus.DRAFT, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)
 

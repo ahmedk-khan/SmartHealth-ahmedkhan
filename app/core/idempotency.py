@@ -46,5 +46,21 @@ class RedisIdempotencyStore:
 
         self._fallback_store[(user_id, idempotency_key)] = value
 
+    def claim(self, user_id: int, idempotency_key: str, ttl_seconds: int = 300) -> bool:
+        """Atomically claim a key so concurrent requests cannot run two sagas."""
+        key = self._build_key(user_id, idempotency_key)
+        if self._redis is not None:
+            return bool(self._redis.set(key, json.dumps({"status": "IN_PROGRESS"}), ex=ttl_seconds, nx=True))
+        store_key = (user_id, idempotency_key)
+        if store_key in self._fallback_store:
+            return False
+        self._fallback_store[store_key] = {"status": "IN_PROGRESS"}
+        return True
+
+    def delete(self, user_id: int, idempotency_key: str) -> None:
+        if self._redis is not None:
+            self._redis.delete(self._build_key(user_id, idempotency_key))
+        self._fallback_store.pop((user_id, idempotency_key), None)
+
 
 idempotency_store = RedisIdempotencyStore()

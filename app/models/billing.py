@@ -1,7 +1,7 @@
 import datetime
 from enum import Enum
 
-from sqlalchemy import Column, DateTime, Enum as SAEnum, ForeignKey, Integer, Numeric
+from sqlalchemy import Column, DateTime, Enum as SAEnum, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -18,6 +18,7 @@ class Billing(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=False, unique=True)
+    idempotency_key = Column(String(255), nullable=True, unique=True, index=True)
     amount = Column(Numeric(10, 2), nullable=False, default=0)
     status = Column(SAEnum(BillingStatus), nullable=False, default=BillingStatus.PENDING)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False)

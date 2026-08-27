@@ -1,118 +1,307 @@
-import datetime
+import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import AppError
 from app.core.idempotency import idempotency_store
-from app.models import Appointment, AppointmentStatus, AppointmentStatusHistory, Billing, BillingStatus, Patient, Slot, SlotStatus, User, UserRole, VisitStatus
-from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead
+from app.core.settings import settings
+from app.models import Appointment, AppointmentStatus, Provider, SlotStatus, User, UserRole, VisitStatus
+from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead, PaginatedResponse, WaitlistEntryRead
+from app.repositories import AppointmentRepository, PatientRepository, SlotRepository, WaitlistRepository
+from app.services.appointment_service import AppointmentService
 from app.workflows.appointment_saga import run_appointment_saga
+from app.services.healthcare_event_service import HealthcareEventService
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
+logger = logging.getLogger(__name__)
 
 
-@router.post("", response_model=AppointmentRead, status_code=status.HTTP_202_ACCEPTED)
+def _ensure_provider_owns_appointment(appointment: Appointment, current_user: User, db: Session) -> None:
+    if current_user.role != UserRole.provider:
+        return
+    provider = db.query(Provider).filter(Provider.user_id == current_user.id).first()
+    if not provider or appointment.provider_id != provider.id:
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+
+
+def _ensure_visit_role(appointment: Appointment, current_user: User, db: Session, *, provider_only: bool = False) -> None:
+    if current_user.role == UserRole.provider:
+        _ensure_provider_owns_appointment(appointment, current_user, db)
+        return
+    allowed_roles = {UserRole.admin, UserRole.provider} if provider_only else {UserRole.admin, UserRole.front_desk, UserRole.provider}
+    if current_user.role not in allowed_roles:
+        raise AppError("Only authorized staff can update visit status", status_code=403, error_type="forbidden")
+
+
+@router.post("/waitlist/{slot_id}", response_model=WaitlistEntryRead, status_code=status.HTTP_201_CREATED)
+def join_waitlist(slot_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role != UserRole.patient:
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+    patient = PatientRepository(db).get_by_user_id(current_user.id)
+    slot = SlotRepository(db).get_by_id(slot_id)
+    if not patient or not slot:
+        raise AppError("Slot or patient not found", status_code=404, error_type="not_found")
+    if slot.status == SlotStatus.AVAILABLE:
+        raise AppError("Slot is still available", status_code=409, error_type="conflict")
+    return WaitlistRepository(db).join(slot_id, patient.id)
+
+
+@router.post(
+    "",
+    response_model=AppointmentRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def create_appointment(
     payload: AppointmentCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: Optional[str] = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+    correlation_id: Optional[str] = Header(
+        default="demo-trace-001",
+        alias="X-Correlation-ID",
+    ),
 ):
     if current_user.role != UserRole.patient:
-        raise PermissionError("Forbidden")
+        raise AppError(
+            "Forbidden",
+            status_code=403,
+            error_type="forbidden",
+        )
+
+    appointment_repository = AppointmentRepository(db)
+    patient_repository = PatientRepository(db)
+    slot_repository = SlotRepository(db)
 
     if idempotency_key:
-        cached = idempotency_store.get(current_user.id, idempotency_key)
+        cached = idempotency_store.get(
+            current_user.id,
+            idempotency_key,
+        )
+
         if cached:
-            appointment = db.query(Appointment).filter(Appointment.id == cached["appointment_id"]).first()
-            if appointment:
+            if cached.get("status") == "IN_PROGRESS":
+                raise AppError(
+                    "A booking with this idempotency key is in progress",
+                    status_code=409,
+                    error_type="idempotency_in_progress",
+                )
+
+            appointment = appointment_repository.get_by_id(
+                cached["appointment_id"]
+            )
+
+            if appointment and appointment.status != AppointmentStatus.CANCELLED:
                 return appointment
 
-    patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
-    if not patient:
-        raise ValueError("Patient profile not found")
+            idempotency_store.delete(
+                current_user.id,
+                idempotency_key,
+            )
 
-    slot = db.query(Slot).filter(Slot.id == payload.slot_id).first()
+    patient = patient_repository.get_by_user_id(current_user.id)
+
+    if not patient:
+        raise AppError(
+            "Patient profile not found",
+            status_code=404,
+            error_type="not_found",
+        )
+
+    slot = slot_repository.get_by_id(payload.slot_id)
+
     if not slot:
-        raise ValueError("Slot not found")
+        raise AppError(
+            "Slot not found",
+            status_code=404,
+            error_type="not_found",
+        )
+
     if slot.status != SlotStatus.AVAILABLE:
-        raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
+        raise AppError(
+            "Slot is no longer available",
+            status_code=409,
+            error_type="conflict",
+        )
+
+    if idempotency_key and not idempotency_store.claim(
+        current_user.id,
+        idempotency_key,
+    ):
+        raise AppError(
+            "A booking with this idempotency key is in progress",
+            status_code=409,
+            error_type="idempotency_in_progress",
+        )
 
     payload_data = payload.model_dump()
+
     workflow_payload = {
         "patient_id": patient.id,
         "slot_id": slot.id,
+        "idempotency_key": idempotency_key,
+        "correlation_id": correlation_id,
         **payload_data,
     }
+
+    if settings.async_booking_enabled:
+        try:
+            appointment = appointment_repository.create_pending(
+                patient_id=patient.id,
+                provider_id=slot.provider_id,
+                service_id=slot.service_id,
+                slot_id=slot.id,
+                booking_key=idempotency_key,
+            )
+            workflow_payload["appointment_id"] = appointment.id
+            from app.workflows.appointment_saga import start_appointment_saga
+            await start_appointment_saga(workflow_payload)
+        except Exception as exc:
+            db.rollback()
+            if idempotency_key:
+                idempotency_store.delete(current_user.id, idempotency_key)
+            raise AppError("Failed to start appointment workflow", status_code=503, error_type="workflow_unavailable", detail=str(exc)) from exc
+        if idempotency_key:
+            idempotency_store.set(current_user.id, idempotency_key, {"appointment_id": appointment.id})
+        return appointment
+
     try:
         workflow_result = await run_appointment_saga(workflow_payload)
+
+    except AppError:
+        if idempotency_key:
+            idempotency_store.delete(
+                current_user.id,
+                idempotency_key,
+            )
+        raise
+
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+        if idempotency_key:
+            idempotency_store.delete(
+                current_user.id,
+                idempotency_key,
+            )
 
-    appointment = db.query(Appointment).filter(Appointment.id == workflow_result["appointment_id"]).first()
+        logger.exception(
+            "Appointment saga failed",
+            extra={
+                "patient_id": patient.id,
+                "slot_id": slot.id,
+            },
+        )
+
+        raise AppError(
+            "Failed to create appointment",
+            status_code=500,
+            error_type="internal_error",
+        ) from exc
+
+    appointment = appointment_repository.get_by_id(
+        workflow_result["appointment_id"]
+    )
+
     if not appointment:
-        raise ValueError("Appointment not found after saga execution")
+        raise AppError(
+            "Appointment not found after saga execution",
+            status_code=404,
+            error_type="not_found",
+        )
 
-    db.refresh(appointment)
-    appointment.status = AppointmentStatus.PENDING
-    db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
-    db.commit()
-    db.refresh(appointment)
+    appointment = appointment_repository.get_by_id(appointment.id)
 
     if idempotency_key:
-        idempotency_store.set(current_user.id, idempotency_key, {"appointment_id": appointment.id})
+        idempotency_store.set(
+            current_user.id,
+            idempotency_key,
+            {"appointment_id": appointment.id},
+        )
+
+    HealthcareEventService().publish_appointment_event(
+        "appointment.created",
+        appointment_id=appointment.id,
+        patient_id=appointment.patient_id,
+        provider_id=appointment.provider_id,
+        service_id=appointment.service_id,
+        slot_id=appointment.slot_id,
+        status=appointment.status.value,
+    )
 
     return appointment
 
+@router.get("", response_model=PaginatedResponse[AppointmentRead])
+def list_appointments(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return AppointmentService(db).list(limit, offset, current_user)
+
 
 @router.get("/{appointment_id}/state", response_model=dict)
-def get_appointment_state(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+def get_appointment_state(
+    appointment_id: int,
+    correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    appointment_repository = AppointmentRepository(db)
+    appointment = appointment_repository.get_by_id(appointment_id)
     if not appointment:
-        raise ValueError("Appointment not found")
+        raise AppError("Appointment not found", status_code=404, error_type="not_found")
+    _ensure_provider_owns_appointment(appointment, current_user, db)
 
     if current_user.role == UserRole.patient:
-        patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+        patient = PatientRepository(db).get_by_user_id(current_user.id)
         if not patient or appointment.patient_id != patient.id:
-            raise PermissionError("Forbidden")
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
     elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
 
-    return {"id": appointment.id, "status": appointment.status.value, "slot_id": appointment.slot_id}
+    return {
+        "id": appointment.id,
+        "status": appointment.status.value,
+        "visit_status": appointment.visit_status.value,
+        "slot_id": appointment.slot_id,
+    }
 
 
 @router.post("/{appointment_id}/cancel", response_model=AppointmentRead)
 def cancel_appointment(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    appointment_repository = AppointmentRepository(db)
+    appointment = appointment_repository.get_by_id(appointment_id)
     if not appointment:
-        raise ValueError("Appointment not found")
+        raise AppError("Appointment not found", status_code=404, error_type="not_found")
+    _ensure_provider_owns_appointment(appointment, current_user, db)
 
     if current_user.role == UserRole.patient:
-        patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+        patient = PatientRepository(db).get_by_user_id(current_user.id)
         if not patient or appointment.patient_id != patient.id:
-            raise PermissionError("Forbidden")
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
     elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
 
     if appointment.status in {AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED}:
         raise AppError("Appointment is already in a terminal state", status_code=409, error_type="conflict")
 
-    appointment.status = AppointmentStatus.CANCELLED
-    appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
-    db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
-
-    slot = db.query(Slot).filter(Slot.id == appointment.slot_id).first()
-    if slot:
-        slot.status = SlotStatus.AVAILABLE
-        slot.patient_id = None
-        slot.updated_at = appointment.updated_at
-
-    db.commit()
-    db.refresh(appointment)
-    return appointment
+    cancelled = appointment_repository.cancel(appointment)
+    HealthcareEventService().publish_appointment_event(
+        "appointment.cancelled",
+        appointment_id=cancelled.id,
+        patient_id=cancelled.patient_id,
+        provider_id=cancelled.provider_id,
+        service_id=cancelled.service_id,
+        slot_id=cancelled.slot_id,
+        status=cancelled.status.value,
+    )
+    return cancelled
 
 
 @router.post("/{appointment_id}/reschedule", response_model=AppointmentRead)
@@ -122,49 +311,56 @@ def reschedule_appointment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    appointment_repository = AppointmentRepository(db)
+    appointment = appointment_repository.get_by_id(appointment_id)
     if not appointment:
-        raise ValueError("Appointment not found")
+        raise AppError("Appointment not found", status_code=404, error_type="not_found")
+    _ensure_provider_owns_appointment(appointment, current_user, db)
 
     if current_user.role == UserRole.patient:
-        patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+        patient = PatientRepository(db).get_by_user_id(current_user.id)
         if not patient or appointment.patient_id != patient.id:
-            raise PermissionError("Forbidden")
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
     elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
 
     if appointment.status in {AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED}:
         raise AppError("Appointment is already in a terminal state", status_code=409, error_type="conflict")
 
-    new_slot = db.query(Slot).filter(Slot.id == payload.slot_id).first()
+    new_slot = SlotRepository(db).get_by_id(payload.slot_id)
     if not new_slot:
-        raise ValueError("Replacement slot not found")
+        raise AppError("Replacement slot not found", status_code=404, error_type="not_found")
     if new_slot.status != SlotStatus.AVAILABLE:
         raise AppError("Replacement slot is no longer available", status_code=409, error_type="conflict")
+    if new_slot.provider_id != appointment.provider_id or new_slot.service_id != appointment.service_id:
+        raise AppError("Replacement slot must use the same provider and service", status_code=409, error_type="conflict")
 
-    old_slot = db.query(Slot).filter(Slot.id == appointment.slot_id).first()
-    if old_slot:
-        old_slot.status = SlotStatus.AVAILABLE
-        old_slot.patient_id = None
-        old_slot.updated_at = datetime.datetime.now(datetime.timezone.utc)
-
-    new_slot.status = SlotStatus.RESERVED
-    new_slot.patient_id = appointment.patient_id
-    new_slot.updated_at = datetime.datetime.now(datetime.timezone.utc)
-
-    appointment.slot_id = new_slot.id
-    appointment.provider_id = new_slot.provider_id
-    appointment.service_id = new_slot.service_id
-    appointment.status = AppointmentStatus.PENDING
-    appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
-    db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
-
-    db.commit()
-    db.refresh(appointment)
-    return appointment
+    old_slot_id = appointment.slot_id
+    try:
+        updated = appointment_repository.reschedule(appointment, new_slot)
+    except ValueError as exc:
+        raise AppError(str(exc), status_code=409, error_type="conflict") from exc
+    HealthcareEventService().publish_appointment_event(
+        "appointment.rescheduled",
+        appointment_id=updated.id,
+        patient_id=updated.patient_id,
+        provider_id=updated.provider_id,
+        service_id=updated.service_id,
+        slot_id=updated.slot_id,
+        old_slot_id=old_slot_id,
+        new_slot_id=updated.slot_id,
+        status=updated.status.value,
+    )
+    return updated
 
 
-def _transition_visit_status(appointment: Appointment, target_status: VisitStatus, db: Session) -> dict[str, str]:
+def _transition_visit_status(appointment: Appointment, target_status: VisitStatus, db: Session, current_user: User) -> dict[str, str]:
+    if appointment.status != AppointmentStatus.CONFIRMED:
+        raise AppError(
+            f"Appointment {appointment.id} has status {appointment.status.value}; only CONFIRMED appointments can enter the visit workflow",
+            status_code=409,
+            error_type="conflict",
+        )
     if appointment.visit_status == target_status:
         return {"appointment_id": appointment.id, "visit_status": appointment.visit_status.value}
 
@@ -178,77 +374,139 @@ def _transition_visit_status(appointment: Appointment, target_status: VisitStatu
         if appointment.visit_status != VisitStatus.IN_PROGRESS:
             raise AppError("Visit must be in progress before completion", status_code=409, error_type="conflict")
 
-    appointment.visit_status = target_status
-    appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
-    db.commit()
-    db.refresh(appointment)
-    return {"appointment_id": appointment.id, "visit_status": appointment.visit_status.value}
+    appointment_repository = AppointmentRepository(db)
+    try:
+        updated = appointment_repository.transition_visit_status(
+            appointment,
+            target_status,
+            actor=f"user:{current_user.id}",
+            reason=f"visit transition to {target_status.value}",
+        )
+    except ValueError as exc:
+        raise AppError(str(exc), status_code=409, error_type="conflict") from exc
+    return {"appointment_id": updated.id, "visit_status": updated.visit_status.value}
 
 
 @router.post("/{appointment_id}/visit/check-in", response_model=dict)
-def check_in_visit(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+def check_in_visit(
+    appointment_id: int,
+    correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    appointment = AppointmentRepository(db).get_by_id(appointment_id)
     if not appointment:
-        raise ValueError("Appointment not found")
-    if current_user.role == UserRole.patient:
-        patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
-        if not patient or appointment.patient_id != patient.id:
-            raise PermissionError("Forbidden")
-    elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Appointment not found", status_code=404, error_type="not_found")
+    _ensure_visit_role(appointment, current_user, db)
 
-    return _transition_visit_status(appointment, VisitStatus.CHECKED_IN, db)
+    return _transition_visit_status(appointment, VisitStatus.CHECKED_IN, db, current_user)
 
 
 @router.post("/{appointment_id}/visit/start", response_model=dict)
-def start_visit(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+def start_visit(
+    appointment_id: int,
+    correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    appointment = AppointmentRepository(db).get_by_id(appointment_id)
     if not appointment:
-        raise ValueError("Appointment not found")
-    if current_user.role == UserRole.patient:
-        patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
-        if not patient or appointment.patient_id != patient.id:
-            raise PermissionError("Forbidden")
-    elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Appointment not found", status_code=404, error_type="not_found")
+    _ensure_visit_role(appointment, current_user, db, provider_only=True)
 
-    return _transition_visit_status(appointment, VisitStatus.IN_PROGRESS, db)
+    return _transition_visit_status(appointment, VisitStatus.IN_PROGRESS, db, current_user)
 
 
 @router.post("/{appointment_id}/visit/complete", response_model=dict)
-def complete_visit(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+def complete_visit(
+    appointment_id: int,
+    correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    appointment = AppointmentRepository(db).get_by_id(appointment_id)
     if not appointment:
-        raise ValueError("Appointment not found")
-    if current_user.role == UserRole.patient:
-        patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
-        if not patient or appointment.patient_id != patient.id:
-            raise PermissionError("Forbidden")
-    elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Appointment not found", status_code=404, error_type="not_found")
+    _ensure_visit_role(appointment, current_user, db, provider_only=True)
 
-    return _transition_visit_status(appointment, VisitStatus.COMPLETED, db)
+    result = _transition_visit_status(appointment, VisitStatus.COMPLETED, db, current_user)
+    from app.services.billing_checker import BillingChecker
+    from app.services.notification_service import NotificationService
+    try:
+        BillingChecker(db).precheck(appointment, idempotency_key=f"completion:{appointment.id}")
+    except Exception:
+        logger.exception("Completion billing update failed", extra={"appointment_id": appointment.id})
+    try:
+        NotificationService(db).create_follow_up(appointment)
+    except Exception:
+        logger.exception("Completion follow-up notification failed", extra={"appointment_id": appointment.id})
+    try:
+        checked_in_at = appointment.visit.checked_in_at if appointment.visit else None
+        scheduled_at = appointment.slot.start_datetime if appointment.slot else None
+        wait_seconds = int((checked_in_at - scheduled_at).total_seconds()) if checked_in_at and scheduled_at else None
+        HealthcareEventService().publish_appointment_event(
+            "visit.completed",
+            appointment_id=appointment.id,
+            patient_id=appointment.patient_id,
+            provider_id=appointment.provider_id,
+            service_id=appointment.service_id,
+            slot_id=appointment.slot_id,
+            status=appointment.status.value,
+            visit_status=VisitStatus.COMPLETED.value,
+            scheduled_at=scheduled_at.isoformat() if scheduled_at else None,
+            checked_in_at=checked_in_at.isoformat() if checked_in_at else None,
+            wait_seconds=wait_seconds,
+        )
+    except Exception:
+        logger.exception("Completion analytics event failed", extra={"appointment_id": appointment.id})
+    return result
+
+
+@router.post("/{appointment_id}/no-show", response_model=AppointmentRead)
+def mark_no_show(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    appointment = AppointmentRepository(db).get_by_id(appointment_id)
+    if not appointment:
+        raise AppError("Appointment not found", status_code=404, error_type="not_found")
+    _ensure_provider_owns_appointment(appointment, current_user, db)
+    if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+    if appointment.status in {AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED, AppointmentStatus.NO_SHOW}:
+        raise AppError("Appointment is already in a terminal state", status_code=409, error_type="conflict")
+    return AppointmentRepository(db).mark_no_show(appointment)
 
 
 @router.post("/{appointment_id}/billing/pre-check", response_model=BillingRead)
 def billing_pre_check(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    appointment_repository = AppointmentRepository(db)
+    appointment = appointment_repository.get_by_id(appointment_id)
     if not appointment:
-        raise ValueError("Appointment not found")
+        raise AppError("Appointment not found", status_code=404, error_type="not_found")
+    _ensure_provider_owns_appointment(appointment, current_user, db)
 
     if current_user.role == UserRole.patient:
-        patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+        patient = PatientRepository(db).get_by_user_id(current_user.id)
         if not patient or appointment.patient_id != patient.id:
-            raise PermissionError("Forbidden")
+            raise AppError("Forbidden", status_code=403, error_type="forbidden")
     elif current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-        raise PermissionError("Forbidden")
+        raise AppError("Forbidden", status_code=403, error_type="forbidden")
 
-    existing = db.query(Billing).filter(Billing.appointment_id == appointment.id).first()
+    existing = appointment_repository.get_billing_by_appointment_id(appointment.id)
     if existing:
         return existing
 
-    billing = Billing(appointment_id=appointment.id, amount=50.0, status=BillingStatus.APPROVED)
-    db.add(billing)
-    db.commit()
-    db.refresh(billing)
+    try:
+        from app.services.billing_checker import BillingChecker
+        billing = BillingChecker(db).precheck(appointment, idempotency_key=f"appointment:{appointment.id}")
+    except IntegrityError:
+        db.rollback()
+        billing = appointment_repository.get_billing_by_appointment_id(appointment.id)
+        if billing is None:
+            raise AppError("Billing pre-check could not be completed", status_code=503, error_type="billing_unavailable")
+    HealthcareEventService().publish_billing_event(
+        "billing.precheck.created",
+        billing_id=billing.id,
+        appointment_id=appointment.id,
+        amount=float(billing.amount),
+        status=billing.status.value,
+    )
     return billing

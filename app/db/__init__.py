@@ -8,6 +8,23 @@ engine = create_engine(settings.database_url, future=True) # engine => the conne
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
 
+__all__ = ["Base", "SessionLocal", "engine"]
 
-def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

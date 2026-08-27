@@ -1,0 +1,12 @@
+[
+  {"query": "routine general health consultation", "expected_service": "General Consultation"},
+  {"query": "primary care checkup", "expected_service": "General Consultation"},
+  {"query": "review current medications with a clinician", "expected_service": "General Consultation"},
+  {"query": "medical history consultation", "expected_service": "General Consultation"},
+  {"query": "routine patient check", "expected_service": "General Consultation"},
+  {"query": "primary care appointment preparation", "expected_service": "General Consultation"},
+  {"query": "general practitioner consultation", "expected_service": "General Consultation"},
+  {"query": "health screening and checkup", "expected_service": "General Consultation"},
+  {"query": "bring medication list to appointment", "expected_service": "General Consultation"},
+  {"query": "basic outpatient consultation", "expected_service": "General Consultation"}
+]

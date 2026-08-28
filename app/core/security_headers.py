@@ -11,7 +11,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Content-Security-Policy"] = "default-src 'self'"
+        if not request.url.path.startswith(("/docs", "/redoc")):
+            response.headers["Content-Security-Policy"] = "default-src 'self'"
         app_env = getattr(request.app.state, "app_env", "").lower()
         if request.url.scheme == "https" or app_env in {"production", "prod"}:
             response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"

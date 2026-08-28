@@ -192,6 +192,8 @@ services:
 
   temporal-ui:
     image: temporalio/ui:${TEMPORAL_UI_IMAGE_TAG:?Set TEMPORAL_UI_IMAGE_TAG to an approved version in .env}
+    ports:
+      - "8080:8080"
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_UI_PORT: 8080

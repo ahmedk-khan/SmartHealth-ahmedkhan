@@ -156,7 +156,7 @@ async def embed_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 @activity.defn
-async def mark_published(payload: dict[str, Any]) -> dict[str, Any]:
+async def publish_service_published_event(payload: dict[str, Any]) -> dict[str, Any]:
     service_id = payload["service_id"]
     chunks = payload["chunks"]
     db: Session = db_module.SessionLocal()
@@ -248,7 +248,7 @@ class ServicePublishWorkflow:
             )
             self._progress.update({"stage": "PERSISTING", "embeddings_generated": len(embedded_chunks)})
             await workflow.execute_activity(
-                mark_published,
+                publish_service_published_event,
                 {"service_id": service_id, "chunks": embedded_chunks},
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=TRANSIENT_ACTIVITY_RETRY,

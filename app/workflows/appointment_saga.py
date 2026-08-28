@@ -267,6 +267,26 @@ async def confirm_appointment(appointment_data: dict[str, Any]) -> dict[str, Any
 
 
 @activity.defn
+async def publish_appointment_created_event(appointment_data: dict[str, Any]) -> dict[str, object]:
+    setup_activity_context(appointment_data, "publish_appointment_created_event")
+    db: Session = db_module.SessionLocal()
+    try:
+        from app.services.healthcare_event_service import HealthcareEventService
+
+        return HealthcareEventService(db).publish_appointment_event(
+            "appointment.created",
+            appointment_id=appointment_data["appointment_id"],
+            patient_id=appointment_data.get("patient_id"),
+            provider_id=appointment_data.get("provider_id"),
+            service_id=appointment_data.get("service_id"),
+            slot_id=appointment_data.get("slot_id"),
+            status=appointment_data.get("status"),
+        )
+    finally:
+        db.close()
+
+
+@activity.defn
 async def release_slot(appointment_data: dict[str, Any]) -> dict[str, Any]:
     """
     Release a reserved slot back to available status.
@@ -388,6 +408,17 @@ class AppointmentSagaWorkflow:
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=TRANSIENT_ACTIVITY_RETRY,
             )
+            await workflow.execute_activity(
+                publish_appointment_created_event,
+                {
+                    **appointment_data,
+                    "appointment_id": appointment_id,
+                    **validated,
+                    "status": "CONFIRMED",
+                },
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=TRANSIENT_ACTIVITY_RETRY,
+            )
             logger.info("Appointment saga workflow completed successfully", extra={"appointment_id": appointment_id})
             return {"workflow_status": "CONFIRMED", "appointment_id": appointment_id}
         except Exception as exc:
@@ -452,6 +483,12 @@ async def _run_appointment_saga_locally(appointment_data: dict[str, Any]) -> dic
         await run_billing_precheck({**appointment_data, "appointment_id": appointment_id})
         reminder = await send_reminder({**appointment_data, "appointment_id": appointment_id})
         await confirm_appointment({**appointment_data, "appointment_id": appointment_id})
+        await publish_appointment_created_event({
+            **appointment_data,
+            "appointment_id": appointment_id,
+            **validated,
+            "status": "CONFIRMED",
+        })
         logger.info("Appointment saga completed locally", extra={"appointment_id": appointment_id})
         return {"workflow_status": "CONFIRMED", "appointment_id": appointment_id}
     except Exception:

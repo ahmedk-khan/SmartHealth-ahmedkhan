@@ -12,7 +12,7 @@ from app.temporal.activities import (
     confirm_appointment,
     create_pending_appointment,
     embed_chunks,
-    mark_published,
+    publish_service_published_event,
     mark_publish_failed,
     mark_slot_reserved,
     release_slot,
@@ -23,6 +23,7 @@ from app.temporal.activities import (
     validate_appointment_data,
     validate_service,
     wait_for_worker_interruption,
+    publish_appointment_created_event,
 )
 from app.workflows import AppointmentSagaWorkflow, ServicePublishWorkflow
 
@@ -62,7 +63,7 @@ def main() -> None:
                 structure_service,
                 chunk_service,
                 embed_chunks,
-                mark_published,
+                publish_service_published_event,
                 mark_slot_reserved,
                 mark_publish_failed,
                 validate_appointment_data,
@@ -75,6 +76,7 @@ def main() -> None:
                 cancel_pending_appointment,
                 create_pending_appointment,
                 wait_for_worker_interruption,
+                publish_appointment_created_event,
             ],
         )
         await temporal_worker.run()

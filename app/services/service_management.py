@@ -14,7 +14,7 @@ from app.models import ServiceStatus, User, UserRole
 from app.repositories import ProviderRepository, ServiceRepository
 from app.services.base import BaseService
 from app.services.healthcare_event_service import HealthcareEventService
-from app.workflows.service_publish import ServicePublishWorkflow, chunk_service, embed_chunks, mark_published, structure_service, validate_service
+from app.workflows.service_publish import ServicePublishWorkflow, chunk_service, embed_chunks, publish_service_published_event, structure_service, validate_service
 
 
 _LOCAL_PUBLISH_WORKFLOWS: dict[str, dict[str, Any]] = {}
@@ -175,7 +175,7 @@ class ServiceManagementService(BaseService):
             _LOCAL_PUBLISH_WORKFLOWS[workflow_id].update({"stage": "EMBEDDING", "chunks_total": len(chunks)})
             embedded_chunks = await embed_chunks(chunks)
             _LOCAL_PUBLISH_WORKFLOWS[workflow_id].update({"stage": "PERSISTING", "embeddings_generated": len(embedded_chunks)})
-            await mark_published({"service_id": service_id, "chunks": embedded_chunks})
+            await publish_service_published_event({"service_id": service_id, "chunks": embedded_chunks})
             _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "COMPLETE"
             _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = ServiceStatus.PUBLISHED.value
             return _LocalWorkflowHandle(workflow_id)

@@ -201,16 +201,6 @@ async def create_appointment(
             {"appointment_id": appointment.id},
         )
 
-    HealthcareEventService(db).publish_appointment_event(
-        "appointment.created",
-        appointment_id=appointment.id,
-        patient_id=appointment.patient_id,
-        provider_id=appointment.provider_id,
-        service_id=appointment.service_id,
-        slot_id=appointment.slot_id,
-        status=appointment.status.value,
-    )
-
     return appointment
 
 @router.get("", response_model=PaginatedResponse[AppointmentRead])

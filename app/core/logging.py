@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
 _CORRELATION_ID: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 _REQUEST_ID: ContextVar[str | None] = ContextVar("request_id", default=None)
+
+
+def generate_request_id() -> str:
+    return uuid.uuid4().hex
 
 _PHI_KEYWORDS = (
     "name",

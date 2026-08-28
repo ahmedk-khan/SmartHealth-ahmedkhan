@@ -1,13 +1,15 @@
-from typing import Callable, Generator
+from collections.abc import Callable, Generator
+from enum import Enum
 
 from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, app_error, forbidden_error, invalid_token_error
 from app.core.security import decode_access_token
-from app.models import User
+from app.models import User, UserRole
+from app.repositories.auth import AuthRepository
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
@@ -24,32 +26,52 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     payload = decode_access_token(token)
     user_id = payload.get("sub")
     if user_id is None:
-        raise AppError("Invalid authentication credentials", status_code=401, error_type="invalid_token")
+        raise invalid_token_error()
     try:
-        user = db.query(User).filter(User.id == int(user_id)).first()
+        user = AuthRepository(db).get_user_by_id(int(user_id))
     except (TypeError, ValueError) as exc:
-        raise AppError("Invalid authentication credentials", status_code=401, error_type="invalid_token") from exc
+        raise invalid_token_error() from exc
     if not user:
         raise AppError("User not found", status_code=401, error_type="user_not_found")
     if not user.is_active:
-        raise AppError("Inactive user", status_code=401, error_type="inactive_user")
+        raise app_error("Inactive user", status_code=401, error_type="inactive_user")
     return user
 
 
-def require_role(*roles: str) -> Callable[[User], User]:
-    allowed = {role for role in roles}
+def _role_value(role: str | UserRole | Enum) -> str:
+    if isinstance(role, UserRole):
+        return role.value
+    if isinstance(role, Enum):
+        return str(role.value)
+    return str(role)
+
+
+def require_role(*roles: str | UserRole | Enum) -> Callable[[User], User]:
+    allowed = {_role_value(role) for role in roles}
 
     def dependency(current_user: User = Depends(get_current_user)) -> User:
         if current_user.role.value not in allowed:
-            raise AppError(
-                "Operation forbidden",
-                status_code=403,
-                error_type="forbidden",
-            )
+            raise forbidden_error()
         return current_user
 
     return dependency
 
 
-def require_roles(*roles: str) -> Callable[[User], User]:
+def require_roles(*roles: str | UserRole | Enum) -> Callable[[User], User]:
     return require_role(*roles)
+
+
+def require_admin_or_front_desk(current_user: User = Depends(require_role(UserRole.admin, UserRole.front_desk))) -> User:
+    return current_user
+
+
+def require_staff(current_user: User = Depends(require_role(UserRole.admin, UserRole.front_desk, UserRole.provider))) -> User:
+    return current_user
+
+
+def require_provider(current_user: User = Depends(require_role(UserRole.provider))) -> User:
+    return current_user
+
+
+def require_patient(current_user: User = Depends(require_role(UserRole.patient))) -> User:
+    return current_user

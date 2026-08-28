@@ -1,13 +1,20 @@
 import asyncio
+import logging
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from kafka import KafkaProducer
+from starlette.concurrency import run_in_threadpool
+try:
+    from kafka import KafkaProducer
+except ImportError:  # pragma: no cover
+    KafkaProducer = None
 from pydantic import BaseModel, Field
-from sqlalchemy import text
 
 from app.core.settings import settings
 from app.db import engine
+from app.repositories.health import HealthRepository
+
+logger = logging.getLogger(__name__)
 
 try:
     import redis
@@ -20,6 +27,24 @@ except ImportError:  # pragma: no cover
     temporal_client = None
 
 router = APIRouter()
+
+
+def _check_redis_connection() -> None:
+    client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+    client.ping()
+
+
+def _check_kafka_connection() -> bool:
+    if KafkaProducer is None:
+        return False
+    producer = KafkaProducer(
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        api_version_auto_timeout_ms=3000,
+        request_timeout_ms=3000,
+    )
+    connected = producer.bootstrap_connected() is True
+    producer.close(timeout=3)
+    return connected
 
 
 class HealthResponse(BaseModel):
@@ -43,13 +68,13 @@ class ReadinessResponse(BaseModel):
     )
     checks: dict[str, str] = Field(
         ...,
-        description="Per-dependency check results: values are 'ok', 'disabled', or 'error: <exception_type>'.",
+        description="Per-dependency check results: values are 'ok', 'disabled', or 'error: Service temporarily unavailable'.",
         examples=[
             {
                 "database": "ok",
                 "redis": "ok",
                 "kafka": "disabled",
-                "temporal": "error: RuntimeError",
+                "temporal": "error: Service temporarily unavailable",
             }
         ],
     )
@@ -107,9 +132,9 @@ def health():
                         "status": "not_ready",
                         "checks": {
                             "database": "ok",
-                            "redis": "error: ConnectionError",
-                            "kafka": "error: NoBrokersAvailable",
-                            "temporal": "error: RuntimeError",
+                            "redis": "error: Service temporarily unavailable",
+                            "kafka": "error: Service temporarily unavailable",
+                            "temporal": "error: Service temporarily unavailable",
                         },
                     }
                 }
@@ -122,38 +147,36 @@ async def ready():
     has_errors = False
 
     try:
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
+        await run_in_threadpool(HealthRepository(engine).check_database_connection)
         checks["database"] = "ok"
     except Exception as exc:  # pragma: no cover - runtime dependency check
-        checks["database"] = f"error: {type(exc).__name__}"
+        logger.exception("Database readiness check failed", extra={"dependency": "database"})
+        checks["database"] = "error: Service temporarily unavailable"
         has_errors = True
 
     if redis is not None:
         try:
-            client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
-            client.ping()
+            await run_in_threadpool(_check_redis_connection)
             checks["redis"] = "ok"
         except Exception as exc:  # pragma: no cover - runtime dependency check
-            checks["redis"] = f"error: {type(exc).__name__}"
+            logger.exception("Redis readiness check failed", extra={"dependency": "redis"})
+            checks["redis"] = "error: Service temporarily unavailable"
             has_errors = True
     else:
         checks["redis"] = "disabled"
 
     if settings.kafka_enabled:
         try:
-            producer = KafkaProducer(
-                bootstrap_servers=settings.kafka_bootstrap_servers,
-                api_version_auto_timeout_ms=3000,
-                request_timeout_ms=3000,
-            )
-            connected = producer.bootstrap_connected() is True
-            producer.close(timeout=3)
-            checks["kafka"] = "ok" if connected else "error: kafka bootstrap not connected"
-            if not connected:
+            connected = await run_in_threadpool(_check_kafka_connection)
+            if connected:
+                checks["kafka"] = "ok"
+            else:
+                logger.error("Kafka readiness check failed: bootstrap not connected", extra={"dependency": "kafka"})
+                checks["kafka"] = "error: Service temporarily unavailable"
                 has_errors = True
         except Exception as exc:  # pragma: no cover - runtime dependency check
-            checks["kafka"] = f"error: {type(exc).__name__}"
+            logger.exception("Kafka readiness check failed", extra={"dependency": "kafka"})
+            checks["kafka"] = "error: Service temporarily unavailable"
             has_errors = True
     else:
         checks["kafka"] = "disabled"
@@ -167,7 +190,8 @@ async def ready():
             client.get_workflow_handle("health-check-readiness")
             checks["temporal"] = "ok"
         except Exception as exc:  # pragma: no cover - runtime dependency check
-            checks["temporal"] = f"error: {type(exc).__name__}"
+            logger.exception("Temporal readiness check failed", extra={"dependency": "temporal"})
+            checks["temporal"] = "error: Service temporarily unavailable"
             has_errors = True
     else:
         checks["temporal"] = "disabled"
@@ -175,3 +199,4 @@ async def ready():
     status = "ready" if not has_errors else "not_ready"
     code = 200 if not has_errors else 503
     return JSONResponse(status_code=code, content={"status": status, "checks": checks})
+

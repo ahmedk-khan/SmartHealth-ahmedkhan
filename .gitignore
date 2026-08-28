@@ -37,6 +37,7 @@ htmlcov/
 .tox/
 .mypy_cache/
 .ruff_cache/
+tests/demo_tasks/.temporal_test_state.json
 
 # IDEs
 .vscode/

@@ -1,14 +1,14 @@
 import datetime
 import hashlib
+from datetime import timedelta
 from typing import Any
 
-from datetime import timedelta
+from sqlalchemy.orm import Session
 from temporalio import activity, workflow
 from temporalio.exceptions import ApplicationError
-from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, app_error, conflict_error, not_found_error, validation_error
 from app.core.settings import settings
 from app.models import ServiceStatus
 from app.repositories import ContentChunkRepository, ServiceRepository
@@ -27,9 +27,10 @@ async def validate_service(service_id: int) -> dict[str, Any]:
         repository = ServiceRepository(db)
         service = repository.get_for_publication(service_id)
         if not service:
-            raise AppError("Service not found", status_code=404, error_type="not_found")
+            raise not_found_error("Service not found")
         if service.status == ServiceStatus.PUBLISHED:
             return {"status": ServiceStatus.PUBLISHED.value, "service": None}
+
         errors = []
         if not service.description:
             errors.append("description is required")
@@ -38,8 +39,9 @@ async def validate_service(service_id: int) -> dict[str, Any]:
         if not service.department:
             errors.append("owning department is required")
         if errors:
-            ServiceRepository(db).mark_publish_failed(service)
-            raise AppError("Service is incomplete", status_code=422, error_type="publish_validation_failed", detail=errors)
+            repository.mark_publish_failed(service)
+            raise validation_error("Service is incomplete", detail=errors)
+
         repository.mark_publishing(service)
         return {
             "status": ServiceStatus.PUBLISHING.value,
@@ -91,8 +93,8 @@ async def chunk_service(service_struct: dict[str, Any]) -> list[dict[str, Any]]:
         chunks.append(
             {
                 "chunk_index": idx // chunk_size,
-            "content": content,
-            "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "content": content,
+                "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 "service_id": service_struct.get("service_id"),
                 "department": service_struct["department_name"],
                 "specialty": service_struct.get("specialty") or None,
@@ -129,15 +131,14 @@ async def embed_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reusable_embedding = reusable.get((chunk["chunk_index"], content_hash))
         if reusable_embedding is not None:
             continue
-        else:
-            pending.append(chunk | {"content_hash": content_hash})
+        pending.append(chunk | {"content_hash": content_hash})
 
     embedded_by_key = {}
     for start in range(0, len(pending), batch_size):
         batch = pending[start : start + batch_size]
         embeddings = await generate_embeddings([chunk["content"] for chunk in batch])
         if len(embeddings) != len(batch):
-            raise AppError("Embedding provider returned an incomplete batch", status_code=502, error_type="embedding_batch_invalid")
+            raise app_error("Embedding provider returned an incomplete batch", status_code=502, error_type="embedding_batch_invalid")
         embedded_by_key.update(
             ((chunk["chunk_index"], chunk["content_hash"]), embedding)
             for chunk, embedding in zip(batch, embeddings)
@@ -164,12 +165,18 @@ async def mark_published(payload: dict[str, Any]) -> dict[str, Any]:
         chunk_repository = ContentChunkRepository(db)
         service = service_repository.get_for_publication(service_id)
         if not service:
-            raise AppError("Service not found", status_code=404, error_type="not_found")
+            raise not_found_error("Service not found")
         chunk_repository.replace_for_service(service.id, chunks)
         service_repository.mark_published(service, commit=False)
-        db.commit()
         from app.services.healthcare_event_service import HealthcareEventService
-        HealthcareEventService().publish_service_event("service.published", service_id=service.id, department_id=service.department_id, status=service.status.value)
+
+        HealthcareEventService(db).publish_service_event(
+            "service.published",
+            service_id=service.id,
+            department_id=service.department_id,
+            status=service.status.value,
+        )
+        service_repository.commit()
         return {"service_id": service.id, "published": True}
     finally:
         db.close()
@@ -189,6 +196,10 @@ async def mark_publish_failed(service_id: int) -> dict[str, Any]:
 
 @workflow.defn
 class ServicePublishWorkflow:
+    def __init__(self) -> None:
+        self._status = ServiceStatus.PUBLISHING.value
+        self._progress = {"status": self._status, "stage": "VALIDATING", "chunks_total": 0, "embeddings_generated": 0}
+
     @workflow.run
     async def run(self, service_id: int) -> dict[str, Any]:
         self._status = ServiceStatus.PUBLISHING.value
@@ -208,6 +219,7 @@ class ServicePublishWorkflow:
             )
             self._status = ServiceStatus.PUBLISH_FAILED.value
             raise
+
         if published["status"] == ServiceStatus.PUBLISHED.value:
             self._progress = {"status": ServiceStatus.PUBLISHED.value, "stage": "COMPLETE", "chunks_total": 0, "embeddings_generated": 0}
             self._status = ServiceStatus.PUBLISHED.value
@@ -250,13 +262,10 @@ class ServicePublishWorkflow:
             )
             self._status = ServiceStatus.PUBLISH_FAILED.value
             raise
+
         self._progress.update({"stage": "COMPLETE", "status": ServiceStatus.PUBLISHED.value})
         self._status = ServiceStatus.PUBLISHED.value
         return {"workflow_status": ServiceStatus.PUBLISHED.value}
-
-    def __init__(self) -> None:
-        self._status = ServiceStatus.PUBLISHING.value
-        self._progress = {"status": self._status, "stage": "VALIDATING", "chunks_total": 0, "embeddings_generated": 0}
 
     @workflow.query(name="publish_status")
     def publish_status(self) -> str:

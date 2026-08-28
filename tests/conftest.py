@@ -1,4 +1,4 @@
-"""Shared test configuration is kept in test_api.py for backward compatibility."""
+"""Shared test configuration is kept in integration/test_api.py for backward compatibility."""
 
 import os
 

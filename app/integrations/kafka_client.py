@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from kafka import KafkaProducer
+try:
+    from kafka import KafkaProducer
+except ImportError:  # pragma: no cover
+    KafkaProducer = None
 
 from app.core.exceptions import AppError
 from app.core.settings import settings
@@ -77,7 +81,7 @@ class KafkaEventPublisher:
         self._producer: KafkaProducer | None = None
 
     def _get_producer(self) -> KafkaProducer | None:
-        if not self.enabled:
+        if not self.enabled or KafkaProducer is None:
             return None
 
         if self._producer is not None:
@@ -181,3 +185,20 @@ class KafkaEventPublisher:
             "offset": metadata_record.offset if metadata_record else None,
             "event_id": payload["event_id"],
         }
+
+    async def publish_event_async(
+        self,
+        *,
+        event_type: str,
+        entity_type: str,
+        entity_id: str | int,
+        **metadata: Any,
+    ) -> dict[str, Any]:
+        """Publish an event without blocking the event loop on Kafka I/O."""
+        return await asyncio.to_thread(
+            self.publish_event,
+            event_type=event_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            **metadata,
+        )

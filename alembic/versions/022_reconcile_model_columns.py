@@ -63,4 +63,22 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    pass
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    removals = {
+        "users": {"full_name", "is_active"},
+        "patients": {"dob", "contact"},
+        "departments": {"clinic", "order_index"},
+        "services": {"published_at"},
+        "appointments": {"booking_key", "booked_at"},
+        "billings": {"idempotency_key"},
+        "waitlist_entries": {"provider_id"},
+        "content_chunks": {"embedded_at", "embedding_model"},
+        "outbox_events": {"event_id", "correlation_id", "published_at"},
+        "notifications": {"updated_at"},
+        "analytics_daily": {"total_patients", "failed_workflows", "wait_samples"},
+    }
+    for table, columns in removals.items():
+        existing = {column["name"] for column in inspector.get_columns(table)}
+        for name in columns & existing:
+            op.drop_column(table, name)

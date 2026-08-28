@@ -102,7 +102,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("analytics_services_daily")
-    op.drop_table("analytics_appointments_daily")
-    op.drop_table("analytics_processed_events")
-    op.drop_table("failed_jobs")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    tables = set(inspector.get_table_names())
+    archives = {
+        "failed_jobs": "failed_jobs_archived",
+        "analytics_processed_events": "analytics_processed_events_archived",
+        "analytics_appointments_daily": "analytics_appointments_daily_archived",
+        "analytics_services_daily": "analytics_services_daily_archived",
+    }
+    for table, archive in archives.items():
+        if table not in tables:
+            continue
+        if archive in tables:
+            raise RuntimeError(f"Cannot archive {table}: {archive} already exists")
+        op.rename_table(table, archive)

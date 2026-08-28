@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 from uuid import uuid4
-from app import db as db_module
+from sqlalchemy.orm import Session
 from app.integrations.kafka_client import KafkaEventPublisher, KafkaProducerError
 from app.core.logging import get_correlation_id, get_request_id
+from app.repositories.outbox import OutboxRepository
+from app.models.outbox import OutboxEvent
 
 
 logger = logging.getLogger(__name__)
@@ -18,29 +20,24 @@ class HealthcareEventService:
     ensuring end-to-end traceability across the system.
     """
     
-    def __init__(self, publisher: KafkaEventPublisher | None = None) -> None:
+    def __init__(self, db: Session, publisher: KafkaEventPublisher | None = None) -> None:
+        self.outbox = OutboxRepository(db)
         self.publisher = publisher or KafkaEventPublisher()
 
-    @staticmethod
-    def _save_outbox(event_type: str, entity_type: str, entity_id: int, payload: dict[str, object], error: str) -> None:
-        db = db_module.SessionLocal()
+    def _save_outbox(self, event_type: str, entity_type: str, entity_id: int, payload: dict[str, object], error: str) -> None:
         try:
-            from app.models.outbox import OutboxEvent
-            db.add(OutboxEvent(
-                event_id=str(payload.get("event_id") or uuid4()),
-                event_type=event_type,
-                entity_type=entity_type,
-                entity_id=str(entity_id),
-                payload=payload,
-                correlation_id=str(payload.get("correlation_id")) if payload.get("correlation_id") else None,
-                last_error=error,
-            ))
-            db.commit()
+            event = OutboxEvent(
+                    event_id=str(payload.get("event_id") or uuid4()),
+                    event_type=event_type,
+                    entity_type=entity_type,
+                    entity_id=str(entity_id),
+                    payload=payload,
+                    correlation_id=str(payload.get("correlation_id")) if payload.get("correlation_id") else None,
+                    last_error=error,
+                )
+            self.outbox.add(event)
         except Exception:
-            db.rollback()
             logger.exception("Failed to persist event to outbox", extra={"event_type": event_type, "entity_id": entity_id})
-        finally:
-            db.close()
 
     def publish_appointment_event(
         self,

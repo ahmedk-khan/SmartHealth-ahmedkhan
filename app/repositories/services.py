@@ -3,6 +3,18 @@ from app.repositories.base import BaseRepository
 
 
 class ServiceRepository(BaseRepository):
+    def get_by_name(self, name: str) -> Service | None:
+        """Return a service by exact name or None."""
+        return self.db.query(Service).filter(Service.name == name).first()
+
+    def create_seed_service(self, data: dict) -> Service:
+        """Create and refresh a seed service without adding audit records."""
+        service = Service(**data)
+        self.add(service)
+        self.commit()
+        self.refresh(service)
+        return service
+
     def get_by_id(self, service_id: int) -> Service | None:
         return self.db.query(Service).filter(Service.id == service_id).first()
 
@@ -11,62 +23,62 @@ class ServiceRepository(BaseRepository):
 
     def mark_publishing(self, service: Service) -> None:
         service.status = ServiceStatus.PUBLISHING
-        self.db.add(service)
+        self.add(service)
         self.audit("service", service.id, "publishing", after={"status": service.status.value})
-        self.db.commit()
+        self.commit()
 
     def mark_published(self, service: Service, *, commit: bool = True) -> None:
         service.status = ServiceStatus.PUBLISHED
         service.is_published = True
-        self.db.add(service)
+        self.add(service)
         self.audit("service", service.id, "published", after={"status": service.status.value})
         if commit:
-            self.db.commit()
+            self.commit()
 
     def mark_publish_failed(self, service: Service) -> None:
         service.status = ServiceStatus.PUBLISH_FAILED
         service.is_published = False
-        self.db.add(service)
+        self.add(service)
         self.audit("service", service.id, "publish_failed", after={"status": service.status.value})
-        self.db.commit()
+        self.commit()
 
     def department_exists(self, department_id: int) -> bool:
         return self.db.query(Department).filter(Department.id == department_id).first() is not None
 
     def create_service(self, data: dict) -> Service:
         service = Service(**data)
-        self.db.add(service)
-        self.db.flush()
+        self.add(service)
+        self.flush()
         self.audit("service", service.id, "created", after={"status": service.status.value, "department_id": service.department_id})
-        self.db.commit()
-        self.db.refresh(service)
+        self.commit()
+        self.refresh(service)
         return service
 
     def update_service(self, service: Service, data: dict) -> Service:
         for field, value in data.items():
             setattr(service, field, value)
-        self.db.add(service)
+        self.add(service)
         self.audit("service", service.id, "updated", after={"name": service.name, "department_id": service.department_id})
-        self.db.commit()
-        self.db.refresh(service)
+        self.commit()
+        self.refresh(service)
         return service
 
     def publish(self, service: Service) -> Service:
         service.status = ServiceStatus.PUBLISHED
         service.is_published = True
-        self.db.add(service)
+        self.add(service)
         self.audit("service", service.id, "published", after={"status": service.status.value})
-        self.db.commit()
-        self.db.refresh(service)
+        self.commit()
+        self.refresh(service)
         return service
 
     def unpublish(self, service: Service) -> Service:
         service.status = ServiceStatus.UNPUBLISHED
         service.is_published = False
-        self.db.add(service)
+        self.add(service)
         self.audit("service", service.id, "unpublished", after={"status": service.status.value})
-        self.db.commit()
-        self.db.refresh(service)
+        self.commit()
+        self.refresh(service)
         return service
 
     def list_published(self, offset: int, limit: int, search: str | None = None, department_id: int | None = None) -> tuple[list[Service], int]:

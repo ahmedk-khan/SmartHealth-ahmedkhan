@@ -11,6 +11,7 @@ from app.workflows.appointment_saga import (
     send_reminder,
     cancel_reminder,
     validate_appointment_data,
+    wait_for_worker_interruption,
 )
 from app.workflows.service_publish import (
     chunk_service,
@@ -32,6 +33,7 @@ __all__ = [
     "send_reminder",
     "cancel_reminder",
     "validate_appointment_data",
+    "wait_for_worker_interruption",
     "chunk_service",
     "embed_chunks",
     "mark_publish_failed",

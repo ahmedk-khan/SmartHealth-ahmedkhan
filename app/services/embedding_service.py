@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import math
 import re
 from abc import ABC, abstractmethod
@@ -6,8 +7,10 @@ from typing import Any
 
 import httpx
 
-from app.core.exceptions import AppError
+from app.core.exceptions import app_error
 from app.core.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingProvider(ABC):
@@ -23,7 +26,7 @@ def _parse_embedding_response(response: Any) -> list[list[float]]:
         return [response]
     if isinstance(response, list) and all(isinstance(item, list) for item in response):
         return response
-    raise AppError(
+    raise app_error(
         "Embedding provider returned an unsupported response",
         status_code=502,
         error_type="embedding_provider_error",
@@ -39,7 +42,7 @@ def _configured_api_key() -> str:
 
 def _validate_embeddings(embeddings: list[list[float]], texts: list[str], dimensions: int) -> list[list[float]]:
     if len(embeddings) != len(texts) or any(len(item) != dimensions for item in embeddings):
-        raise AppError(
+        raise app_error(
             "Embedding provider returned vectors with unexpected dimensions",
             status_code=502,
             error_type="embedding_dimensions_invalid",
@@ -84,11 +87,11 @@ class HuggingFaceEmbeddingProvider(EmbeddingProvider):
                 response = await client.post(url, headers=headers, json={"inputs": texts})
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise AppError(
+            logger.exception("HuggingFace embedding provider request failed", extra={"model": self.model})
+            raise app_error(
                 "Embedding provider request failed",
                 status_code=502,
                 error_type="embedding_provider_unavailable",
-                detail=str(exc),
             ) from exc
         return _validate_embeddings(_parse_embedding_response(response.json()), texts, self.dimensions)
 
@@ -99,12 +102,13 @@ def get_embedding_provider() -> EmbeddingProvider:
         return FakeEmbeddings()
     provider = settings.embedding_provider.split("#", 1)[0].strip().lower()
     if provider != "huggingface":
-        raise AppError(
+        raise app_error(
             f"Unsupported embedding provider: {settings.embedding_provider}",
             status_code=503,
             error_type="embedding_provider_not_configured",
         )
     return HuggingFaceEmbeddingProvider(api_key, settings.embedding_model, settings.embedding_dimensions)
+
 
 def embedding_model_id() -> str:
     """Return the identity stored with vectors so providers cannot be mixed."""

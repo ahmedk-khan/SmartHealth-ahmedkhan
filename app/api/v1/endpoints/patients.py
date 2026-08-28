@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import AppError
-from app.models import Provider, User, UserRole
-from app.repositories import PatientRepository
+from app.core.authorization import ensure_patient_access
+from app.core.exceptions import AppError, forbidden_error
+from app.models import User, UserRole
+from app.repositories import PatientRepository, ProviderRepository
 from app.schemas.domain import PaginatedResponse, PatientRead, PatientUpdate
 
 router = APIRouter(prefix="/patients", tags=["patients"])
@@ -24,14 +25,14 @@ def list_patients(
     current_user: User = Depends(get_current_user),
 ):
     if current_user.role == UserRole.provider:
-        provider = db.query(Provider).filter(Provider.user_id == current_user.id).first()
+        provider = ProviderRepository(db).get_by_user_id(current_user.id)
         if not provider:
             raise AppError("Provider profile not found", status_code=404, error_type="not_found")
         items, total = PatientRepository(db).list_provider_patients(provider.id, offset=offset, limit=limit, search=search)
     elif current_user.role in {UserRole.admin, UserRole.front_desk}:
         items, total = PatientRepository(db).list_patients(offset=offset, limit=limit, search=search)
     else:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        raise forbidden_error()
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
@@ -46,8 +47,7 @@ def read_patient(patient_id: int, db: Session = Depends(get_db), current_user: U
     patient = repository.get_by_id_or_user_id(patient_id)
     if not patient:
         raise AppError("Patient not found", status_code=404, error_type="not_found")
-    if current_user.role not in {UserRole.admin, UserRole.front_desk} and current_user.id != patient.user_id:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+    ensure_patient_access(patient, current_user)
     return patient
 
 
@@ -62,8 +62,7 @@ def update_patient(
     patient = repository.get_by_id_or_user_id(patient_id)
     if not patient:
         raise AppError("Patient not found", status_code=404, error_type="not_found")
-    if current_user.role not in {UserRole.admin, UserRole.front_desk} and current_user.id != patient.user_id:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+    ensure_patient_access(patient, current_user)
     return repository.update_profile(patient, payload.first_name, payload.last_name)
 
 
@@ -77,8 +76,7 @@ def delete_patient(
     patient = repository.get_by_id_or_user_id(patient_id)
     if not patient:
         raise AppError("Patient not found", status_code=404, error_type="not_found")
-    if current_user.role not in {UserRole.admin, UserRole.front_desk} and current_user.id != patient.user_id:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+    ensure_patient_access(patient, current_user)
     if patient.appointments:
         raise AppError(
             "Profiles with appointment history cannot be deleted",

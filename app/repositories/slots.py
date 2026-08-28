@@ -5,28 +5,37 @@ from app.repositories.base import BaseRepository
 
 
 class SlotRepository(BaseRepository):
+    def get_by_provider_and_service(self, provider_id: int, service_id: int) -> Slot | None:
+        """Return the first slot for a provider and service pair."""
+        return self.db.query(Slot).filter(Slot.provider_id == provider_id, Slot.service_id == service_id).first()
+
+    def create_seed_slot(self, data: dict) -> Slot:
+        """Create and commit a seed slot without adding audit records."""
+        slot = Slot(**data)
+        self.add(slot)
+        self.commit()
+        return slot
+
     def update_slot(self, slot: Slot, data: dict) -> Slot:
         for field in ("service_id", "start_datetime", "end_datetime"):
             if field in data:
                 setattr(slot, field, data[field])
-        self.db.commit()
-        self.db.refresh(slot)
+        self.save_and_refresh(slot)
         return slot
 
     def delete_slot(self, slot: Slot) -> None:
-        self.db.delete(slot)
-        self.db.commit()
+        self.delete(slot)
 
     def get_by_id(self, slot_id: int) -> Slot | None:
         return self.db.query(Slot).filter(Slot.id == slot_id).first()
 
     def create_slot(self, data: dict) -> Slot:
         slot = Slot(**data)
-        self.db.add(slot)
-        self.db.flush()
+        self.add(slot)
+        self.flush()
         self.audit("slot", slot.id, "created", after={"status": slot.status.value, "provider_id": slot.provider_id, "service_id": slot.service_id})
-        self.db.commit()
-        self.db.refresh(slot)
+        self.commit()
+        self.refresh(slot)
         return slot
 
     def reserve_for_patient(self, slot_id: int, patient_id: int) -> Slot | None:
@@ -37,7 +46,7 @@ class SlotRepository(BaseRepository):
         )
         if updated != 1:
             return None
-        self.db.commit()
+        self.commit()
         return self.get_by_id(slot_id)
 
     def list_slots(self, offset: int, limit: int, patient_only_available: bool = False) -> tuple[list[Slot], int]:

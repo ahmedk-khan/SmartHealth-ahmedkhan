@@ -1,11 +1,12 @@
 from typing import Any
 import logging
-import uuid
 
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+from app.core.logging import generate_request_id
 
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,30 @@ class AppError(Exception):
         self.status_code = status_code
         self.error_type = error_type
         self.detail = detail
+
+
+def app_error(message: str, status_code: int = 400, error_type: str = "app_error", detail: Any = None) -> AppError:
+    return AppError(message=message, status_code=status_code, error_type=error_type, detail=detail)
+
+
+def forbidden_error(message: str = "Forbidden", detail: Any = None) -> AppError:
+    return app_error(message, status_code=403, error_type="forbidden", detail=detail)
+
+
+def not_found_error(message: str = "Not found", detail: Any = None) -> AppError:
+    return app_error(message, status_code=404, error_type="not_found", detail=detail)
+
+
+def conflict_error(message: str = "Conflict", detail: Any = None) -> AppError:
+    return app_error(message, status_code=409, error_type="conflict", detail=detail)
+
+
+def validation_error(message: str = "Validation failed", detail: Any = None) -> AppError:
+    return app_error(message, status_code=422, error_type="validation_error", detail=detail)
+
+
+def invalid_token_error(message: str = "Could not validate credentials", detail: Any = None) -> AppError:
+    return app_error(message, status_code=401, error_type="invalid_token", detail=detail)
 
 
 def format_app_error(exc: AppError) -> dict:
@@ -52,6 +77,14 @@ def format_error_payload(error_type: str, message: str, detail: Any = None, requ
 def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     request_id = getattr(request.state, "request_id", None)
     return JSONResponse(status_code=exc.status_code, content={**format_app_error(exc), **({"request_id": request_id} if request_id else {})})
+
+
+def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", None)
+    return JSONResponse(
+        status_code=429,
+        content=format_error_payload("rate_limit_exceeded", "Rate limit exceeded", request_id=request_id),
+    )
 
 
 def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -84,5 +117,3 @@ def unexpected_exception_handler(request: Request, exc: Exception) -> JSONRespon
     )
 
 
-def generate_request_id() -> str:
-    return uuid.uuid4().hex

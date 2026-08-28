@@ -1,11 +1,18 @@
-from app.core.exceptions import AppError
+from app.core.exceptions import not_found_error
 import datetime
 
 from app.models import Appointment, Notification, NotificationStatus
+from app.repositories.appointments import AppointmentRepository
+from app.repositories.notifications import NotificationRepository
 from app.services.base import BaseService
 
 
 class NotificationService(BaseService):
+    def __init__(self, db):
+        super().__init__(db)
+        self.notifications = NotificationRepository(db)
+        self.appointments = AppointmentRepository(db)
+
     def create_follow_up(self, appointment: Appointment) -> Notification:
         notification = Notification(
             user_id=appointment.patient.user_id,
@@ -13,53 +20,40 @@ class NotificationService(BaseService):
             payload={"appointment_id": appointment.id, "channel": "email"},
             status=NotificationStatus.PENDING,
         )
-        self.db.add(notification)
-        self.db.commit()
-        self.db.refresh(notification)
-        return notification
+        return self.notifications.add_and_refresh(notification)
 
     def schedule_appointment_reminder(self, appointment_id: int) -> Notification:
-        existing = self.db.query(Notification).filter(
-            Notification.type == "APPOINTMENT_REMINDER",
-            Notification.payload["appointment_id"].as_integer() == appointment_id,
-        ).first()
+        existing = self.notifications.get_reminder(appointment_id)
         if existing:
             return existing
-        appointment = self.db.query(Appointment).filter(Appointment.id == appointment_id).one_or_none()
+        appointment = self.appointments.get_by_id_or_none(appointment_id)
         if appointment is None:
-            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+            raise not_found_error("Appointment not found")
         notification = Notification(
             user_id=appointment.patient.user_id,
             type="APPOINTMENT_REMINDER",
             payload={"appointment_id": appointment.id, "channel": "email"},
             status=NotificationStatus.PENDING,
         )
-        self.db.add(notification)
-        self.db.commit()
-        self.db.refresh(notification)
-        return notification
+        return self.notifications.add_and_refresh(notification)
 
     def cancel_notification(self, notification_id: int) -> Notification | None:
-        notification = self.db.query(Notification).filter(Notification.id == notification_id).with_for_update().one_or_none()
+        notification = self.notifications.get_by_id_for_update(notification_id)
         if notification is None or notification.status == NotificationStatus.CANCELLED:
             return notification
         if notification.status == NotificationStatus.SENT:
             return notification
-        notification.status = NotificationStatus.CANCELLED
-        notification.updated_at = datetime.datetime.now(datetime.timezone.utc)
-        self.db.commit()
-        return notification
+        return self.notifications.cancel(notification)
 
     def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
-        appointment = self.db.query(Appointment).filter(Appointment.id == appointment_id).one_or_none()
+        appointment = self.appointments.get_by_id_or_none(appointment_id)
         if appointment is None:
-            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+            raise not_found_error("Appointment not found")
 
         notification = self.schedule_appointment_reminder(appointment_id)
         if notification.status == NotificationStatus.CANCELLED:
             return {"appointment_id": appointment.id, "status": "cancelled", "notification_id": notification.id}
-        notification.status = NotificationStatus.SENT
-        self.db.commit()
+        self.notifications.mark_sent(notification)
         return {
             "appointment_id": appointment.id,
             "patient_id": appointment.patient_id,

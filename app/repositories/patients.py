@@ -5,16 +5,26 @@ from app.repositories.base import BaseRepository
 
 
 class PatientRepository(BaseRepository):
+    def create_seed_profile(self, user_id: int, first_name: str, last_name: str) -> Patient:
+        """Create and refresh a seed patient profile."""
+        patient = Patient(user_id=user_id, first_name=first_name, last_name=last_name)
+        self.add(patient)
+        self.commit()
+        self.refresh(patient)
+        return patient
+
+    def get_by_id(self, patient_id: int) -> Patient | None:
+        """Return a patient by exact patient ID or None."""
+        return self.db.query(Patient).filter(Patient.id == patient_id).first()
+
     def update_profile(self, patient: Patient, first_name: str | None, last_name: str | None) -> Patient:
         patient.first_name = first_name.strip() if first_name else None
         patient.last_name = last_name.strip() if last_name else None
-        self.db.commit()
-        self.db.refresh(patient)
+        self.save_and_refresh(patient)
         return patient
 
     def delete_profile(self, patient: Patient) -> None:
-        self.db.delete(patient)
-        self.db.commit()
+        self.delete(patient)
 
     def get_by_id_or_user_id(self, patient_id: int) -> Patient | None:
         patient = self.db.query(Patient).filter(Patient.id == patient_id).first()

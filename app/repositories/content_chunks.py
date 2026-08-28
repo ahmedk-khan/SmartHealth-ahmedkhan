@@ -1,10 +1,34 @@
 import math
 
+from sqlalchemy import or_
+
 from app.models import ContentChunk, Service
 from app.repositories.base import BaseRepository
 
 
 class ContentChunkRepository(BaseRepository):
+    def count_for_service(self, service_id: int) -> int:
+        """Return the number of content chunks for a service."""
+        return self.db.query(ContentChunk).filter(ContentChunk.service_id == service_id).count()
+
+    def create_seed_chunks(self, chunks: list[dict]) -> None:
+        """Add and commit seed content chunks."""
+        self.db.add_all([ContentChunk(**chunk) for chunk in chunks])
+        self.commit()
+
+    def list_stale_published_chunks(self, model_id: str) -> list[ContentChunk]:
+        """Return published chunks with missing or stale embedding models."""
+        return self.db.query(ContentChunk).join(Service, ContentChunk.service_id == Service.id).filter(
+            Service.is_published.is_(True),
+            or_(ContentChunk.embedding_model.is_(None), ContentChunk.embedding_model != model_id),
+        ).all()
+
+    def update_embeddings(self, chunks: list[ContentChunk], embeddings: list[list[float]], model_id: str) -> None:
+        """Update chunk embeddings and commit the supplied embedding values."""
+        for chunk, embedding in zip(chunks, embeddings):
+            chunk.embedding = embedding
+            chunk.embedding_model = model_id
+        self.commit()
     def get_reusable_embeddings(self, service_id: int, chunk_keys: list[tuple[int, str]], embedding_model: str) -> dict[tuple[int, str], list[float]]:
         if not chunk_keys:
             return {}

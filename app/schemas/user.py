@@ -14,7 +14,6 @@ class UserRole(str, Enum):
 
 class UserBase(BaseModel):
     email: EmailStr
-    role: UserRole
 
 
 class UserCreate(UserBase):
@@ -30,6 +29,7 @@ class UserLogin(BaseModel):
 
 class UserRead(UserBase):
     id: int
+    role: UserRole
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

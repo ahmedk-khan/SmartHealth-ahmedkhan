@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from app import db as db_module
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, app_error, conflict_error, not_found_error
 from app.models import Appointment, AppointmentStatus, AppointmentStatusHistory, Billing, BillingStatus, Patient, Slot, SlotStatus
-from app.repositories.slots import SlotRepository
+from app.repositories import AppointmentRepository, PatientRepository, SlotRepository
 from app.workflows.temporal_logging import setup_activity_context, log_activity_step, log_activity_error
 from app.core.settings import settings
 from app.services.billing_checker import BillingChecker
@@ -46,16 +46,16 @@ async def validate_appointment_data(appointment_data: dict[str, Any]) -> dict[st
     db: Session = db_module.SessionLocal()
     try:
         log_activity_step("Fetching patient", {"patient_id": appointment_data.get("patient_id")})
-        patient = db.query(Patient).filter(Patient.id == appointment_data["patient_id"]).first()
+        patient = PatientRepository(db).get_by_id(appointment_data["patient_id"])
         if not patient:
-            raise AppError("Patient not found", status_code=404, error_type="not_found")
+            raise not_found_error("Patient not found")
 
         log_activity_step("Fetching slot", {"slot_id": appointment_data.get("slot_id")})
-        slot = db.query(Slot).filter(Slot.id == appointment_data["slot_id"]).first()
+        slot = SlotRepository(db).get_by_id(appointment_data["slot_id"])
         if not slot:
-            raise AppError("Slot not found", status_code=404, error_type="not_found")
+            raise not_found_error("Slot not found")
         if slot.status != SlotStatus.AVAILABLE:
-            raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
+            raise conflict_error("Slot is no longer available")
 
         log_activity_step("Validation complete", {"provider_id": slot.provider_id, "service_id": slot.service_id})
         return {"patient_id": patient.id, "slot_id": slot.id, "provider_id": slot.provider_id, "service_id": slot.service_id}
@@ -93,14 +93,14 @@ async def reserve_slot(appointment_data: dict[str, Any]) -> dict[str, Any]:
     appointment_id: int | None = None
     try:
         log_activity_step("Fetching slot for reservation", {"slot_id": appointment_data.get("slot_id")})
-        slot = db.query(Slot).filter(Slot.id == appointment_data["slot_id"]).first()
+        slot = SlotRepository(db).get_by_id(appointment_data["slot_id"])
         if not slot:
-            raise AppError("Slot not found", status_code=404, error_type="not_found")
+            raise not_found_error("Slot not found")
 
         log_activity_step("Atomically reserving slot", {"slot_id": slot.id, "status": "RESERVED"})
         reserved = SlotRepository(db).reserve_for_patient(slot.id, appointment_data["patient_id"])
         if reserved is None:
-            raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
+            raise conflict_error("Slot is no longer available")
         
         logger.info("Slot reserved successfully", extra={"slot_id": reserved.id, "patient_id": reserved.patient_id})
         return {"slot_id": reserved.id, "patient_id": reserved.patient_id}
@@ -126,14 +126,15 @@ async def run_billing_precheck(appointment_data: dict[str, Any]) -> dict[str, An
     db: Session = db_module.SessionLocal()
     try:
         log_activity_step("Checking existing billing", {"appointment_id": appointment_data.get("appointment_id")})
-        appointment = db.query(Appointment).filter(Appointment.id == appointment_data["appointment_id"]).first()
+        appointment_repository = AppointmentRepository(db)
+        appointment = appointment_repository.get_by_id(appointment_data["appointment_id"])
         if not appointment:
-            raise AppError("Appointment not found", status_code=404, error_type="not_found")
-        existing = db.query(Billing).filter(Billing.appointment_id == appointment.id).first()
+            raise not_found_error("Appointment not found")
+        existing = appointment_repository.get_billing_by_appointment_id(appointment.id)
         if existing:
             logger.info("Billing record already exists", extra={"appointment_id": appointment_data["appointment_id"], "status": existing.status.value})
             if existing.status != BillingStatus.APPROVED:
-                raise AppError("Billing pre-check declined", status_code=402, error_type="billing_declined")
+                raise app_error("Billing pre-check declined", status_code=402, error_type="billing_declined")
             return {"status": existing.status.value, "amount": float(existing.amount)}
 
         try:
@@ -143,8 +144,8 @@ async def run_billing_precheck(appointment_data: dict[str, Any]) -> dict[str, An
                 force_failure=appointment_data.get("force_billing_failure"),
             )
         except IntegrityError:
-            db.rollback()
-            billing = db.query(Billing).filter(Billing.appointment_id == appointment_data["appointment_id"]).first()
+            appointment_repository.rollback()
+            billing = appointment_repository.get_billing_by_appointment_id(appointment_data["appointment_id"])
             if billing is None:
                 raise
         
@@ -165,30 +166,18 @@ async def create_pending_appointment(appointment_data: dict[str, Any]) -> dict[s
     setup_activity_context(appointment_data, "create_pending_appointment")
     db: Session = db_module.SessionLocal()
     try:
+        appointment_repository = AppointmentRepository(db)
         existing_id = appointment_data.get("appointment_id")
         if existing_id:
-            existing = db.query(Appointment).filter(Appointment.id == existing_id).first()
+            existing = appointment_repository.get_by_id(existing_id)
             if existing:
                 return {"appointment_id": existing.id}
         booking_key = appointment_data.get("idempotency_key")
         if booking_key:
-            existing = db.query(Appointment).filter(Appointment.booking_key == booking_key).first()
+            existing = appointment_repository.get_by_booking_key(booking_key)
             if existing:
                 return {"appointment_id": existing.id}
-        appointment = Appointment(
-            patient_id=appointment_data["patient_id"],
-            provider_id=appointment_data["provider_id"],
-            service_id=appointment_data["service_id"],
-            slot_id=appointment_data["slot_id"],
-            status=AppointmentStatus.REQUESTED,
-            booking_key=booking_key,
-        )
-        db.add(appointment)
-        db.flush()
-        db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
-        from app.models.audit import AuditLog
-        db.add(AuditLog(entity_type="appointment", entity_id=appointment.id, action="requested", after={"status": appointment.status.value}))
-        db.commit()
+        appointment = appointment_repository.create_requested(appointment_data)
         return {"appointment_id": appointment.id}
     finally:
         db.close()
@@ -198,16 +187,12 @@ async def create_pending_appointment(appointment_data: dict[str, Any]) -> dict[s
 async def mark_slot_reserved(appointment_data: dict[str, Any]) -> dict[str, Any]:
     db: Session = db_module.SessionLocal()
     try:
-        appointment = db.query(Appointment).filter(Appointment.id == appointment_data["appointment_id"]).first()
+        appointment_repository = AppointmentRepository(db)
+        appointment = appointment_repository.get_by_id(appointment_data["appointment_id"])
         if not appointment:
-            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+            raise not_found_error("Appointment not found")
         if appointment.status == AppointmentStatus.REQUESTED:
-            appointment.status = AppointmentStatus.SLOT_RESERVED
-            appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
-            db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
-            from app.models.audit import AuditLog
-            db.add(AuditLog(entity_type="appointment", entity_id=appointment.id, action="slot_reserved", after={"status": appointment.status.value}))
-            db.commit()
+            appointment = appointment_repository.mark_slot_reserved(appointment.id)
         return {"status": appointment.status.value}
     finally:
         db.close()
@@ -264,17 +249,13 @@ async def confirm_appointment(appointment_data: dict[str, Any]) -> dict[str, Any
     db: Session = db_module.SessionLocal()
     try:
         log_activity_step("Fetching appointment", {"appointment_id": appointment_data.get("appointment_id")})
-        appointment = db.query(Appointment).filter(Appointment.id == appointment_data["appointment_id"]).first()
+        appointment_repository = AppointmentRepository(db)
+        appointment = appointment_repository.get_by_id(appointment_data["appointment_id"])
         if not appointment:
-            raise AppError("Appointment not found", status_code=404, error_type="not_found")
+            raise not_found_error("Appointment not found")
         
         log_activity_step("Updating appointment status to CONFIRMED", {"appointment_id": appointment.id})
-        appointment.status = AppointmentStatus.CONFIRMED
-        appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
-        db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
-        from app.models.audit import AuditLog
-        db.add(AuditLog(entity_type="appointment", entity_id=appointment.id, action="confirmed", after={"status": appointment.status.value}))
-        db.commit()
+        appointment = appointment_repository.confirm(appointment.id)
         
         logger.info("Appointment confirmed", extra={"appointment_id": appointment.id, "status": appointment.status.value})
         return {"status": appointment.status.value}
@@ -300,19 +281,11 @@ async def release_slot(appointment_data: dict[str, Any]) -> dict[str, Any]:
     db: Session = db_module.SessionLocal()
     try:
         log_activity_step("Releasing slot", {"slot_id": appointment_data.get("slot_id")})
-        slot = db.query(Slot).filter(Slot.id == appointment_data["slot_id"]).first()
-        if slot:
-            appointment_id = appointment_data.get("appointment_id")
-            if appointment_id is not None:
-                appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
-                if appointment and slot.patient_id != appointment.patient_id:
-                    return {"slot_released": False, "reason": "slot_owned_by_another_patient"}
-            slot.status = SlotStatus.AVAILABLE
-            slot.patient_id = None
-            slot.updated_at = datetime.datetime.now(datetime.timezone.utc)
-            db.commit()
-            logger.info("Slot released", extra={"slot_id": slot.id})
-        return {"slot_released": True}
+        appointment_id = appointment_data.get("appointment_id")
+        result, released_slot_id = AppointmentRepository(db).release_slot_for_appointment(appointment_data["slot_id"], appointment_id)
+        if released_slot_id is not None:
+            logger.info("Slot released", extra={"slot_id": released_slot_id})
+        return result
     except Exception as exc:
         log_activity_error("release_slot", exc)
         raise
@@ -325,15 +298,8 @@ async def cancel_pending_appointment(appointment_data: dict[str, Any]) -> dict[s
     setup_activity_context(appointment_data, "cancel_pending_appointment")
     db: Session = db_module.SessionLocal()
     try:
-        appointment = db.query(Appointment).filter(Appointment.id == appointment_data["appointment_id"]).first()
-        if appointment and appointment.status in {AppointmentStatus.REQUESTED, AppointmentStatus.SLOT_RESERVED, AppointmentStatus.PENDING}:
-            appointment.status = AppointmentStatus.CANCELLED
-            appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
-            db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
-            from app.models.audit import AuditLog
-            db.add(AuditLog(entity_type="appointment", entity_id=appointment.id, action="compensated", after={"status": appointment.status.value}))
-            db.commit()
-        return {"appointment_cancelled": appointment is not None}
+        appointment_repository = AppointmentRepository(db)
+        return {"appointment_cancelled": appointment_repository.cancel_pending(appointment_data["appointment_id"])}
     finally:
         db.close()
 
@@ -464,21 +430,13 @@ async def _run_appointment_saga_locally(appointment_data: dict[str, Any]) -> dic
         if appointment_data.get("force_failure"):
             raise RuntimeError("Simulated saga failure")
 
-        appointment = Appointment(
-            patient_id=validated["patient_id"],
-            provider_id=validated["provider_id"],
-            service_id=validated["service_id"],
-            slot_id=validated["slot_id"],
-            status=AppointmentStatus.REQUESTED,
-            booking_key=appointment_data.get("idempotency_key"),
-        )
-        db.add(appointment)
-        db.flush()
-        db.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
-        from app.models.audit import AuditLog
-        db.add(AuditLog(entity_type="appointment", entity_id=appointment.id, action="requested", after={"status": appointment.status.value}))
-        db.commit()
-        db.refresh(appointment)
+        appointment = AppointmentRepository(db).create_requested({
+            "patient_id": validated["patient_id"],
+            "provider_id": validated["provider_id"],
+            "service_id": validated["service_id"],
+            "slot_id": validated["slot_id"],
+            "idempotency_key": appointment_data.get("idempotency_key"),
+        })
         appointment_id = appointment.id
         logger.info("Appointment record created (local)", extra={"appointment_id": appointment_id})
         await mark_slot_reserved({**appointment_data, "appointment_id": appointment_id})
@@ -514,7 +472,7 @@ async def run_appointment_saga(appointment_data: dict[str, Any]) -> dict[str, An
         cause = exc.cause
         while cause is not None:
             if isinstance(cause, ApplicationError) and cause.type == "conflict":
-                raise AppError("Slot is no longer available", status_code=409, error_type="conflict") from exc
+                raise conflict_error("Slot is no longer available") from exc
             cause = getattr(cause, "cause", None)
         raise
 
@@ -523,7 +481,7 @@ async def start_appointment_saga(appointment_data: dict[str, Any]):
     try:
         client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
     except Exception as exc:
-        raise AppError("Temporal workflow service is unavailable", status_code=503, error_type="workflow_unavailable") from exc
+        raise app_error("Temporal workflow service is unavailable", status_code=503, error_type="workflow_unavailable") from exc
     workflow_id = appointment_data.get("workflow_id")
     if not workflow_id:
         idempotency_key = appointment_data.get("idempotency_key")

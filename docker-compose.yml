@@ -17,7 +17,17 @@ services:
 
   api:
     build: .
-    command: sh -c "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # Defaults - confirm against real infra sizing.
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     ports:
       - "8000:8000"
     volumes:
@@ -42,6 +52,16 @@ services:
   celery-worker:
     build: .
     command: celery -A app.celery_app worker --loglevel=info
+    # Defaults - confirm against real infra sizing.
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping --timeout=5 | grep -q 'OK'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     volumes:
       - ./app:/app/app
     env_file:
@@ -61,7 +81,17 @@ services:
 
   celery-beat:
     build: .
-    command: celery -A app.celery_app beat --loglevel=info
+    command: celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    # Defaults - confirm against real infra sizing.
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib; assert any('celery' in p.read_text(errors='ignore') and 'beat' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     volumes:
       - ./app:/app/app
     env_file:
@@ -76,6 +106,16 @@ services:
   temporal-worker:
     build: .
     command: python -m app.temporal.worker
+    # Defaults - confirm against real infra sizing.
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib; assert any('app.temporal.worker' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     volumes:
       - ./app:/app/app
     env_file:
@@ -94,6 +134,16 @@ services:
   analytics-consumer:
     build: .
     command: python -m app.workers.analytics_consumer
+    # Defaults - confirm against real infra sizing.
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib; assert any('app.workers.analytics_consumer' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     volumes:
       - ./app:/app/app
     env_file:
@@ -110,11 +160,9 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: appuser
-      POSTGRES_PASSWORD: apppassword
-      POSTGRES_DB: appdb
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -125,16 +173,14 @@ services:
       start_period: 10s
 
   temporal:
-    image: temporalio/auto-setup:latest
-    ports:
-      - "7233:7233"
+    image: temporalio/auto-setup:${TEMPORAL_IMAGE_TAG:?Set TEMPORAL_IMAGE_TAG to an approved version in .env}
     environment:
       DB: postgres12
       DB_PORT: 5432
       POSTGRES_SEEDS: postgres
-      POSTGRES_USER: appuser
-      POSTGRES_PWD: apppassword
-      POSTGRES_DB: appdb
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
       ENABLE_API: "true"
       ENABLE_UI: "true"
       TEMPORAL_ADDRESS: temporal:7233
@@ -145,9 +191,7 @@ services:
       - temporal-data:/etc/temporal/data
 
   temporal-ui:
-    image: temporalio/ui:latest
-    ports:
-      - "8233:8080"
+    image: temporalio/ui:${TEMPORAL_UI_IMAGE_TAG:?Set TEMPORAL_UI_IMAGE_TAG to an approved version in .env}
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_UI_PORT: 8080
@@ -157,8 +201,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -167,9 +209,9 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
-    ports:
-      - "9092:9092"
-      - "29092:29092"
+    # Requires infra decision - Kafka remains PLAINTEXT/no-auth for now.
+    # SASL/TLS requires coordinated listener changes and client configuration
+    # changes in app/integrations/kafka_client.py.
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -195,8 +237,6 @@ services:
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
-    ports:
-      - "2181:2181"
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_SYNC_LIMIT: 2

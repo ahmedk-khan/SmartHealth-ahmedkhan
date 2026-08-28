@@ -9,9 +9,10 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Legacy rows remain nullable; new visit transitions populate all fields.
-    pass
+    # Historical compatibility revision: the required visit columns already exist.
+    return None
 
 
 def downgrade() -> None:
-    pass
+    """No-op because upgrade() intentionally made no schema changes."""
+    return None

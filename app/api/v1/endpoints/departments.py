@@ -1,9 +1,8 @@
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import AppError
-from app.models import User, UserRole
+from app.core.dependencies import get_current_user, get_db, require_admin_or_front_desk
+from app.models import User
 from app.repositories import DepartmentRepository
 from app.schemas.domain import DepartmentCreate, DepartmentRead, PaginatedResponse
 
@@ -17,9 +16,7 @@ router = APIRouter(prefix="/departments", tags=["departments"])
     summary="Create department",
     description="Creates a new department in the healthcare organization catalog. Restricted to admin and front-desk staff.",
 )
-def create_department(payload: DepartmentCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role not in {UserRole.admin, UserRole.front_desk}:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+def create_department(payload: DepartmentCreate, db: Session = Depends(get_db), current_user: User = Depends(require_admin_or_front_desk)):
     repository = DepartmentRepository(db)
     department = repository.create_department(payload.name, payload.description)
     return department

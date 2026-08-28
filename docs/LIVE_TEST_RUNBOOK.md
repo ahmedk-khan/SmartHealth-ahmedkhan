@@ -332,7 +332,7 @@ The appointment ID must remain the same in all runs. This proves Temporal resume
 Watch worker logs in a separate terminal:
 
 ```powershell
-docker compose logs -f --since 10s temporal-worker
+docker compose logs -f --since 2m temporal-worker
 ```
 
 ## 9. Billing Compensation

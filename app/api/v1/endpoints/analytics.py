@@ -1,8 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import AppError
+from app.core.dependencies import get_db, require_admin_or_front_desk
 from app.models import User
 from app.services.analytics_service import AnalyticsService
 
@@ -18,15 +17,10 @@ def get_analytics_summary(
     start_date: str | None = Query(default=None),
     end_date: str | None = Query(default=None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin_or_front_desk),
 ) -> dict[str, object]:
     service = AnalyticsService(db)
-    if current_user.role.value not in {"admin", "front_desk"}:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
-    try:
-        return service.get_dashboard_metrics(start_date, end_date)
-    except ValueError as exc:
-        raise AppError("Invalid analytics date range", status_code=400, error_type="validation_error") from exc
+    return service.get_dashboard_metrics(start_date, end_date)
 
 
 @router.get(
@@ -34,8 +28,6 @@ def get_analytics_summary(
     summary="Reconcile analytics",
     description="Runs a reconciliation pass to verify analytics data consistency and sync state across the system.",
 )
-def reconcile_analytics(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> dict[str, object]:
+def reconcile_analytics(db: Session = Depends(get_db), current_user: User = Depends(require_admin_or_front_desk)) -> dict[str, object]:
     service = AnalyticsService(db)
-    if current_user.role.value not in {"admin", "front_desk"}:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
     return service.reconcile_metrics()

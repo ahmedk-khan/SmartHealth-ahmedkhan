@@ -140,7 +140,7 @@ class AppointmentBase(BaseModel):
 class AppointmentCreate(BaseModel):
     slot_id: int
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
 
 class AppointmentRead(AppointmentBase):

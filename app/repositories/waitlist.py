@@ -14,12 +14,9 @@ class WaitlistRepository(BaseRepository):
         if entry:
             if entry.status != WaitlistStatus.WAITING:
                 entry.status = WaitlistStatus.WAITING
-                self.db.commit()
-                self.db.refresh(entry)
+                self.save_and_refresh(entry)
             return entry
 
         entry = WaitlistEntry(slot_id=slot_id, patient_id=patient_id, status=WaitlistStatus.WAITING)
-        self.db.add(entry)
-        self.db.commit()
-        self.db.refresh(entry)
+        self.save_and_refresh(entry)
         return entry

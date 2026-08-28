@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from kafka import KafkaConsumer
@@ -10,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.settings import settings
 from app.db import SessionLocal
-from app.models import AnalyticsAppointmentDaily, AnalyticsDaily, AnalyticsProcessedEvent, AnalyticsServiceDaily
+from app.repositories import AnalyticsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -59,140 +58,11 @@ class AnalyticsConsumer:
             return False
         return not contains_forbidden(payload)
 
-    def _store_processed(self, db: Session, event_id: str, event_type: str, topic: str, payload: dict[str, Any]) -> None:
-        existing = db.query(AnalyticsProcessedEvent).filter(AnalyticsProcessedEvent.event_id == event_id).first()
-        if existing is not None:
-            return
-
-        db.add(
-            AnalyticsProcessedEvent(
-                event_id=event_id,
-                event_type=event_type,
-                topic=topic,
-                payload=payload,
-            )
-        )
-
     def _update_appointment_metrics(self, db: Session, payload: dict[str, Any]) -> None:
-        event_type = str(payload.get("event_type", "unknown"))
-        appointment_id = payload.get("appointment_id")
-        patient_id = payload.get("patient_id")
-        provider_id = payload.get("provider_id")
-        service_id = payload.get("service_id")
-        slot_id = payload.get("slot_id")
-        status = payload.get("status")
-        visit_status = payload.get("visit_status")
-        occurred_at = payload.get("occurred_at")
-        try:
-            event_date = datetime.fromisoformat(str(occurred_at)).date().isoformat() if occurred_at else datetime.now(timezone.utc).date().isoformat()
-        except ValueError:
-            event_date = datetime.now(timezone.utc).date().isoformat()
-
-        if appointment_id is None:
-            return
-
-        record = (
-            db.query(AnalyticsAppointmentDaily)
-            .filter(
-                AnalyticsAppointmentDaily.event_date == event_date,
-                AnalyticsAppointmentDaily.event_type == event_type,
-                AnalyticsAppointmentDaily.appointment_id == int(appointment_id),
-            )
-            .first()
-        )
-
-        if record is None:
-            record = AnalyticsAppointmentDaily(
-                event_date=event_date,
-                event_type=event_type,
-                appointment_id=int(appointment_id),
-                patient_id=int(patient_id) if patient_id is not None else None,
-                provider_id=int(provider_id) if provider_id is not None else None,
-                service_id=int(service_id) if service_id is not None else None,
-                slot_id=int(slot_id) if slot_id is not None else None,
-                status=str(status) if status is not None else None,
-                visit_status=str(visit_status) if visit_status is not None else None,
-                total_events=0,
-            )
-            db.add(record)
-
-        record.total_events += 1
-        record.patient_id = int(patient_id) if patient_id is not None else record.patient_id
-        record.provider_id = int(provider_id) if provider_id is not None else record.provider_id
-        record.service_id = int(service_id) if service_id is not None else record.service_id
-        record.slot_id = int(slot_id) if slot_id is not None else record.slot_id
-        record.status = str(status) if status is not None else record.status
-        record.visit_status = str(visit_status) if visit_status is not None else record.visit_status
-        record.last_event_at = datetime.now(timezone.utc)
-        record.updated_at = datetime.now(timezone.utc)
-        daily = self._get_daily(db, event_date)
-        if event_type == "appointment.created":
-            daily.appointments_booked += 1
-        elif event_type == "appointment.cancelled":
-            daily.cancellations += 1
-        elif event_type in {"visit.completed", "appointment.visit_status_changed"} and visit_status == "COMPLETED":
-            daily.completed_visits += 1
-            if payload.get("wait_seconds") is not None:
-                wait_seconds = int(payload["wait_seconds"])
-                daily.avg_wait_seconds = int(((daily.avg_wait_seconds or 0) * daily.wait_samples + wait_seconds) / (daily.wait_samples + 1))
-                daily.wait_samples += 1
-        if event_type == "appointment.created" and payload.get("patient_id") is not None:
-            patient_id = int(payload["patient_id"])
-            existing_patient = db.query(AnalyticsAppointmentDaily).filter(
-                AnalyticsAppointmentDaily.patient_id == patient_id,
-                AnalyticsAppointmentDaily.id != record.id,
-            ).first()
-            if existing_patient is None:
-                daily.total_patients += 1
-
-    def _get_daily(self, db: Session, event_date: str) -> AnalyticsDaily:
-        daily = db.query(AnalyticsDaily).filter(AnalyticsDaily.date == event_date).first()
-        if daily is None:
-            daily = AnalyticsDaily(date=datetime.fromisoformat(event_date).date())
-            db.add(daily)
-            db.flush()
-        return daily
+        AnalyticsRepository(db).update_appointment_metrics(payload)
 
     def _update_service_metrics(self, db: Session, payload: dict[str, Any]) -> None:
-        event_type = str(payload.get("event_type", "unknown"))
-        service_id = payload.get("service_id")
-        department_id = payload.get("department_id")
-        status = payload.get("status")
-        occurred_at = payload.get("occurred_at")
-        try:
-            event_date = datetime.fromisoformat(str(occurred_at)).date().isoformat() if occurred_at else datetime.now(timezone.utc).date().isoformat()
-        except ValueError:
-            event_date = datetime.now(timezone.utc).date().isoformat()
-
-        if service_id is None:
-            return
-
-        record = (
-            db.query(AnalyticsServiceDaily)
-            .filter(
-                AnalyticsServiceDaily.event_date == event_date,
-                AnalyticsServiceDaily.event_type == event_type,
-                AnalyticsServiceDaily.service_id == int(service_id),
-            )
-            .first()
-        )
-
-        if record is None:
-            record = AnalyticsServiceDaily(
-                event_date=event_date,
-                event_type=event_type,
-                service_id=int(service_id),
-                department_id=int(department_id) if department_id is not None else None,
-                status=str(status) if status is not None else None,
-                total_events=0,
-            )
-            db.add(record)
-
-        record.total_events += 1
-        record.department_id = int(department_id) if department_id is not None else record.department_id
-        record.status = str(status) if status is not None else record.status
-        record.last_event_at = datetime.now(timezone.utc)
-        record.updated_at = datetime.now(timezone.utc)
+        AnalyticsRepository(db).update_service_metrics(payload)
 
     def process_message(self, message: dict[str, Any], topic: str) -> None:
         if not isinstance(message, dict):
@@ -206,26 +76,25 @@ class AnalyticsConsumer:
 
         db = SessionLocal()
         try:
-            processed = AnalyticsProcessedEvent(
-                event_id=str(event_id),
-                event_type=str(message.get("event_type", "unknown")),
-                topic=topic,
-                payload=message,
-            )
-            db.add(processed)
+            repository = AnalyticsRepository(db)
             try:
-                db.flush()
+                repository.stage_processed_event(
+                    str(event_id),
+                    str(message.get("event_type", "unknown")),
+                    topic,
+                    message,
+                )
             except Exception:
-                db.rollback()
+                repository.rollback()
                 return
 
             if "appointment" in topic:
                 self._update_appointment_metrics(db, message)
             elif "service" in topic:
                 self._update_service_metrics(db, message)
-            db.commit()
+            repository.commit()
         except Exception:
-            db.rollback()
+            AnalyticsRepository(db).rollback()
             raise
         finally:
             db.close()

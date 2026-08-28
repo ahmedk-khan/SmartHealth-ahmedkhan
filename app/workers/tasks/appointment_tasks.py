@@ -10,7 +10,7 @@ from app.core.metrics import record_celery_task
 from app.db import SessionLocal
 from app.services.failed_job_service import FailedJobService
 from app.services.notification_service import NotificationService
-from app.models import Appointment, AppointmentStatus, Slot
+from app.repositories import AppointmentRepository
 from app.core.idempotency import idempotency_store
 
 
@@ -22,14 +22,12 @@ def enqueue_due_appointment_reminders() -> dict[str, int]:
     db = SessionLocal()
     try:
         now = datetime.datetime.now(datetime.timezone.utc)
-        due = db.query(Appointment).join(Slot).filter(
-            Appointment.status == AppointmentStatus.CONFIRMED,
-            Slot.start_datetime >= now,
-            Slot.start_datetime <= now + datetime.timedelta(hours=24),
-        ).all()
+        due = AppointmentRepository(db).iter_due_confirmed_reminders(now, now + datetime.timedelta(hours=24))
+        enqueued = 0
         for appointment in due:
             send_appointment_reminder.delay(appointment.id)
-        return {"enqueued": len(due)}
+            enqueued += 1
+        return {"enqueued": enqueued}
     finally:
         db.close()
 
@@ -73,7 +71,7 @@ def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
     db = SessionLocal()
     task_success = False
     try:
-        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).one_or_none()
+        appointment = AppointmentRepository(db).get_one_or_none_by_id(appointment_id)
         if appointment is None:
             raise AppError("Appointment not found", status_code=404, error_type="not_found")
         delivery_key = f"reminder:{appointment_id}:{appointment.slot.start_datetime.date().isoformat()}"

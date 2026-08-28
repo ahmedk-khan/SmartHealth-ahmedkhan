@@ -1,10 +1,15 @@
+import logging
+
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.concurrency import run_in_threadpool
 
-from app.core.exceptions import AppError
+from app.core.exceptions import app_error
 from app.core.settings import settings
 from app.repositories import ContentChunkRepository
 from app.services.embedding_service import generate_embeddings
+
+logger = logging.getLogger(__name__)
 
 
 async def search_services(db: Session, query: str, limit: int) -> list[dict]:
@@ -12,13 +17,13 @@ async def search_services(db: Session, query: str, limit: int) -> list[dict]:
     repository = ContentChunkRepository(db)
     best_by_service: dict[int, dict] = {}
     try:
-        candidates = repository.search_candidates(query_embedding, limit)
+        candidates = await run_in_threadpool(repository.search_candidates, query_embedding, limit)
     except SQLAlchemyError as exc:
-        raise AppError(
+        logger.exception("Database search candidates query failed", extra={"query": query, "limit": limit})
+        raise app_error(
             "Service search is temporarily unavailable",
             status_code=503,
             error_type="search_unavailable",
-            detail=str(exc),
         ) from exc
 
     for chunk, service, score in candidates:

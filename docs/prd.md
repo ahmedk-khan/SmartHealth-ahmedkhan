@@ -49,7 +49,7 @@ The system is scoped to one clinic and demonstrates authorization, transactional
 
 | Requirement | Implementation | Verification |
 | --- | --- | --- |
-| Registration/login and hashes | `app/api/v1/endpoints/auth.py`, `app/core/security.py` | auth tests in `tests/test_api.py` |
+| Registration/login and hashes | `app/api/v1/endpoints/auth.py`, `app/core/security.py` | auth tests in `tests/integration/test_api.py` |
 | Role and PHI authorization | `app/core/dependencies.py`, endpoint guards | protected endpoint tests |
 | Provider/service/slot management | repositories and endpoints | API integration tests |
 | Searchable published chunks | `app/workflows/service_publish.py`, `ContentChunkRepository` | chunk and publish tests |

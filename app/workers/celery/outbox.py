@@ -2,7 +2,7 @@ import logging
 import json
 import datetime
 
-from app.celery_app import celery_app
+from app.workers.celery_app import celery_app
 from app.db import SessionLocal
 from app.integrations.kafka_client import KafkaEventPublisher, KafkaProducerError
 from app.models import OutboxEvent
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 @celery_app.task(
     bind=True,
-    name="app.workers.tasks.outbox_tasks.publish_pending_events",
+    name="app.workers.celery.outbox.publish_pending_events",
     autoretry_for=(ConnectionError, TimeoutError),
     retry_backoff=True,
     retry_jitter=True,

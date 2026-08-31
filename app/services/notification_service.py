@@ -53,6 +53,15 @@ class NotificationService(BaseService):
         notification = self.schedule_appointment_reminder(appointment_id)
         if notification.status == NotificationStatus.CANCELLED:
             return {"appointment_id": appointment.id, "status": "cancelled", "notification_id": notification.id}
+        if notification.status == NotificationStatus.SENT:
+            return {
+                "appointment_id": appointment.id,
+                "patient_id": appointment.patient_id,
+                "provider_id": appointment.provider_id,
+                "status": "already_sent",
+                "channel": "email",
+                "notification_id": notification.id,
+            }
         self.notifications.mark_sent(notification)
         return {
             "appointment_id": appointment.id,
@@ -62,3 +71,37 @@ class NotificationService(BaseService):
             "channel": "email",
             "notification_id": notification.id,
         }
+
+    def send_visit_follow_up(self, appointment_id: int) -> dict[str, object]:
+        appointment = self.appointments.get_by_id_or_none(appointment_id)
+        if appointment is None:
+            raise not_found_error("Appointment not found")
+
+        notification = self.notifications.get_follow_up(appointment_id)
+        if notification is None:
+            notification = self.create_follow_up(appointment)
+
+        if notification.status == NotificationStatus.CANCELLED:
+            return {"appointment_id": appointment.id, "status": "cancelled", "notification_id": notification.id}
+        if notification.status == NotificationStatus.SENT:
+            return {
+                "appointment_id": appointment.id,
+                "patient_id": appointment.patient_id,
+                "provider_id": appointment.provider_id,
+                "status": "already_sent",
+                "channel": "email",
+                "notification_id": notification.id,
+            }
+        
+        self.notifications.mark_sent(notification)
+        return {
+            "appointment_id": appointment.id,
+            "patient_id": appointment.patient_id,
+            "provider_id": appointment.provider_id,
+            "status": "sent",
+            "channel": "email",
+            "notification_id": notification.id,
+        }
+
+    def list_user_notifications(self, user_id: int, limit: int = 20, offset: int = 0) -> tuple[list[Notification], int]:
+        return self.notifications.list_by_user(user_id, limit, offset)

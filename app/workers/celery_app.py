@@ -16,9 +16,9 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     imports=(
-        "app.workers.tasks.appointment_tasks",
-        "app.workers.tasks.analytics_tasks",
-        "app.workers.tasks.outbox_tasks",
+        "app.workers.celery.appointments",
+        "app.workers.celery.analytics",
+        "app.workers.celery.outbox",
     ),
     timezone="UTC",
     enable_utc=True,
@@ -27,11 +27,11 @@ celery_app.conf.update(
     task_eager_propagates=True,
     beat_schedule={
         "enqueue-due-appointment-reminders": {
-            "task": "app.workers.tasks.appointment_tasks.enqueue_due_appointment_reminders",
+            "task": "app.workers.celery.appointments.enqueue_due_appointment_reminders",
             "schedule": 900.0,
         },
         "publish-pending-events": {
-            "task": "app.workers.tasks.outbox_tasks.publish_pending_events",
+            "task": "app.workers.celery.outbox.publish_pending_events",
             "schedule": 30.0,
         },
     },

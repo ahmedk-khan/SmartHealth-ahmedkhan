@@ -10,6 +10,7 @@ from app.api.v1.endpoints.tasks import router as tasks_router
 from app.api.v1.endpoints.services import router as services_router
 from app.api.v1.endpoints.search import router as search_router
 from app.api.v1.endpoints.slots import router as slots_router
+from app.api.v1.endpoints.notifications import router as notifications_router
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(analytics_router)
@@ -22,3 +23,4 @@ api_v1_router.include_router(tasks_router)
 api_v1_router.include_router(services_router)
 api_v1_router.include_router(search_router)
 api_v1_router.include_router(slots_router)
+api_v1_router.include_router(notifications_router)

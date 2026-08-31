@@ -36,6 +36,7 @@ class HealthcareEventService:
                     last_error=error,
                 )
             self.outbox.add(event)
+            self.outbox.commit()
         except Exception:
             logger.exception("Failed to persist event to outbox", extra={"event_type": event_type, "entity_id": entity_id})
 

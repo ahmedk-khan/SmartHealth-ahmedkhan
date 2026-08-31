@@ -139,6 +139,8 @@ class AppointmentBase(BaseModel):
 
 class AppointmentCreate(BaseModel):
     slot_id: int
+    force_failure: Optional[bool] = None
+    force_billing_failure: Optional[bool] = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -213,6 +215,19 @@ class PatientRead(PatientBase):
     email: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class NotificationRead(BaseModel):
+    id: int
+    user_id: int
+    type: str
+    payload: Optional[dict] = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    sent_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 

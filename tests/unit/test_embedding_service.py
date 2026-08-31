@@ -62,7 +62,7 @@ def test_provider_factory_builds_huggingface_provider(monkeypatch):
 
 def test_publish_embedding_activity_batches_chunks_in_order(monkeypatch):
     from app.core.settings import settings
-    from app.workflows import service_publish
+    from app.workers.temporal.activities import service_publish
 
     calls = []
 
@@ -88,7 +88,7 @@ def test_publish_embedding_activity_reuses_unchanged_chunk(monkeypatch):
 
     from app.db import Base
     from app.models import ContentChunk
-    from app.workflows import service_publish
+    from app.workers.temporal.activities import service_publish
 
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(bind=engine)

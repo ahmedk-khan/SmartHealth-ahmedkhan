@@ -18,6 +18,7 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+    role: Optional[UserRole] = UserRole.patient
     first_name: Optional[str] = None
     last_name: Optional[str] = None
 

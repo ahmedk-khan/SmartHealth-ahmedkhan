@@ -7,14 +7,21 @@ from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from app.core.exceptions import app_error, conflict_error, not_found_error
-from app.core.authorization import ensure_role
+from app.core.authorization import authorize, Permission
 from app.core.settings import settings
-from app.workflows.temporal_policies import WORKFLOW_RETRY
+from app.workers.temporal.policies import WORKFLOW_RETRY
 from app.models import ServiceStatus, User, UserRole
 from app.repositories import ProviderRepository, ServiceRepository
 from app.services.base import BaseService
 from app.services.healthcare_event_service import HealthcareEventService
-from app.workflows.service_publish import ServicePublishWorkflow, chunk_service, embed_chunks, publish_service_published_event, structure_service, validate_service
+from app.workers.temporal.workflows.service_publish import ServicePublishWorkflow
+from app.workers.temporal.activities.service_publish import (
+    chunk_service,
+    embed_chunks,
+    publish_service_published_event,
+    structure_service,
+    validate_service,
+)
 
 
 _LOCAL_PUBLISH_WORKFLOWS: dict[str, dict[str, Any]] = {}
@@ -40,7 +47,7 @@ class ServiceManagementService(BaseService):
         self.providers = ProviderRepository(db)
 
     def create_service(self, payload, current_user: User):
-        ensure_role(current_user, {UserRole.admin, UserRole.front_desk, UserRole.provider})
+        authorize(current_user, Permission.SERVICE_CREATE)
         if not self.repository.department_exists(payload.department_id):
             raise not_found_error("Department not found")
         service_data = payload.model_dump()
@@ -58,11 +65,10 @@ class ServiceManagementService(BaseService):
         return created
 
     def update_service(self, service_id: int, payload, current_user: User):
-        ensure_role(current_user, {UserRole.admin, UserRole.front_desk, UserRole.provider})
         service = self.repository.get_by_id(service_id)
         if not service:
             raise not_found_error("Service not found")
-        self._ensure_provider_service_access(service, current_user)
+        authorize(current_user, Permission.SERVICE_UPDATE, service, provider_repository=self.providers)
         if not self.repository.department_exists(payload.department_id):
             raise not_found_error("Department not found")
         data = payload.model_dump()
@@ -70,7 +76,6 @@ class ServiceManagementService(BaseService):
         return self.repository.update_service(service, data)
 
     async def publish_service(self, service_id: int, current_user: User):
-        ensure_role(current_user, {UserRole.admin, UserRole.front_desk, UserRole.provider})
         service = self.repository.get_by_id(service_id)
         if not service:
             raise not_found_error("Service not found")
@@ -82,7 +87,7 @@ class ServiceManagementService(BaseService):
                     status_code=409,
                     error_type="provider_profile_incomplete",
                 )
-        self._ensure_provider_service_access(service, current_user)
+        authorize(current_user, Permission.SERVICE_PUBLISH, service, provider_repository=self.providers)
         if service.status == ServiceStatus.PUBLISHED:
             raise conflict_error("Service is already published")
         if service.status == ServiceStatus.PUBLISHING:
@@ -114,11 +119,10 @@ class ServiceManagementService(BaseService):
         return {"workflow_id": workflow_id, "run_id": handle.run_id}
 
     def unpublish_service(self, service_id: int, current_user: User):
-        ensure_role(current_user, {UserRole.admin, UserRole.front_desk, UserRole.provider})
         service = self.repository.get_by_id(service_id)
         if not service:
             raise not_found_error("Service not found")
-        self._ensure_provider_service_access(service, current_user)
+        authorize(current_user, Permission.SERVICE_UNPUBLISH, service, provider_repository=self.providers)
         if service.status != ServiceStatus.PUBLISHED:
             raise conflict_error("Service is not published")
         unpublished = self.repository.unpublish(service)
@@ -129,7 +133,7 @@ class ServiceManagementService(BaseService):
         service = self.repository.get_by_id(service_id)
         if not service:
             raise not_found_error("Service not found")
-        self._ensure_provider_service_access(service, current_user)
+        authorize(current_user, Permission.SERVICE_PUBLISH, service, stage="status", provider_repository=self.providers)
         workflow_id = f"service-publish-{service.id}"
         try:
             client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
@@ -146,13 +150,6 @@ class ServiceManagementService(BaseService):
                     return {"workflow_id": workflow_id, "status": ServiceStatus.PUBLISHED.value}
                 raise not_found_error("Publish workflow not found")
             raise
-
-    def _ensure_provider_service_access(self, service, current_user: User) -> None:
-        if current_user.role != UserRole.provider:
-            return
-        provider = self.providers.get_by_user_id(current_user.id)
-        if not provider or not self.providers.has_service(provider.id, service.id):
-            raise app_error("Forbidden", status_code=403, error_type="forbidden")
 
     async def _start_local_publish_workflow(self, service_id: int, workflow_id: str) -> _LocalWorkflowHandle:
         _LOCAL_PUBLISH_WORKFLOWS[workflow_id] = {

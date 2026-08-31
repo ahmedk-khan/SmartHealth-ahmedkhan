@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 
@@ -12,7 +13,15 @@ from app.api import api_router
 from app.api.v1.endpoints.metrics import create_metrics_endpoint
 from app.core.settings import settings
 from app.db import engine
-from app.core.exceptions import AppError, app_error_handler, http_exception_handler, rate_limit_exception_handler, unexpected_exception_handler, validation_exception_handler
+from app.core.exceptions import (
+    AppError,
+    app_error_handler,
+    http_exception_handler,
+    rate_limit_exception_handler,
+    unexpected_exception_handler,
+    validation_exception_handler,
+    database_exception_handler,
+)
 from app.core.http_metrics_middleware import HTTPMetricsMiddleware
 from app.core.logging import configure_logging
 from app.core.middleware import CorrelationIdMiddleware
@@ -122,6 +131,7 @@ def create_app() -> FastAPI:
     app.exception_handler(RateLimitExceeded)(rate_limit_exception_handler)
     app.exception_handler(RequestValidationError)(validation_exception_handler)
     app.exception_handler(HTTPException)(http_exception_handler)
+    app.exception_handler(SQLAlchemyError)(database_exception_handler)
     app.exception_handler(Exception)(unexpected_exception_handler)
 
     @app.get("/", tags=["health"], summary="Service status", description="Returns a simple readiness signal to confirm the API is running.")

@@ -12,7 +12,7 @@ _REQUEST_ID: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 
 def generate_request_id() -> str:
-    return uuid.uuid4().hex
+    return str(uuid.uuid4())
 
 _PHI_KEYWORDS = (
     "name",
@@ -171,9 +171,10 @@ def configure_logging(level: int = logging.INFO) -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
     
-    # Remove existing handlers
+    # Remove existing handlers (preserving pytest capture handlers)
     for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
+        if handler.__class__.__name__ != "LogCaptureHandler":
+            root_logger.removeHandler(handler)
     
     # Add stream handler with JSON formatter
     stream_handler = logging.StreamHandler()

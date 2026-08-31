@@ -265,7 +265,7 @@ make test
 make lint
 ```
 
-The Temporal entrypoint is `python -m app.temporal.worker`; the original workflow modules remain under `app/workflows/` as the implementation layer. Operational helpers live under `scripts/`.
+The Temporal entrypoint is `python -m app.workers.temporal.worker`; all workflows, tasks, and consumers reside consolidated under `app/workers/` (with Temporal workflows under `app/workers/temporal/`). Operational helpers live under `scripts/`.
 
 ## Documentation index
 

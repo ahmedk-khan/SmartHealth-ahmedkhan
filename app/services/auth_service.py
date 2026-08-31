@@ -1,4 +1,5 @@
-from app.core.exceptions import app_error, invalid_token_error
+from app.core.exceptions import app_error, invalid_token_error, ForbiddenError
+from app.core.settings import settings
 from app.core.metrics import record_login_attempt, record_user_registration
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.repositories import AuthRepository
@@ -17,6 +18,16 @@ class AuthService(BaseService):
         """Register a new user with logging and metrics."""
         self.log_info("User registration attempt", operation="register", data={"email": "[REDACTED]"})
 
+        if user_in.role == UserRole.admin and not settings.allow_self_service_admin_registration:
+            self.log_warning(
+                "Registration failed: admin self-service is disabled",
+                operation="register",
+                data={"role": user_in.role},
+            )
+            raise ForbiddenError(
+                "Admin registration is disabled. An existing admin must create the account."
+            )
+
         existing = self.repository.get_user_by_email(user_in.email)
         if existing:
             self.log_warning("Registration failed: email already exists", operation="register", data={"existing": True})
@@ -25,7 +36,7 @@ class AuthService(BaseService):
         user = self.repository.create_user(
             email=user_in.email,
             hashed_password=get_password_hash(user_in.password),
-            role=UserRole.patient,
+            role=user_in.role or UserRole.patient,
             first_name=user_in.first_name,
             last_name=user_in.last_name,
         )

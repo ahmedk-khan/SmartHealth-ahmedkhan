@@ -51,13 +51,13 @@ services:
 
   celery-worker:
     build: .
-    command: celery -A app.celery_app worker --loglevel=info
+    command: celery -A app.workers.celery_app worker --loglevel=info
     # Defaults - confirm against real infra sizing.
     mem_limit: 512m
     cpus: 1.0
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping --timeout=5 | grep -q 'OK'"]
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping --timeout=5 | grep -q 'OK'"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -81,7 +81,7 @@ services:
 
   celery-beat:
     build: .
-    command: celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    command: celery -A app.workers.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
     # Defaults - confirm against real infra sizing.
     mem_limit: 256m
     cpus: 0.5
@@ -105,13 +105,13 @@ services:
 
   temporal-worker:
     build: .
-    command: python -m app.temporal.worker
+    command: python -m app.workers.temporal.worker
     # Defaults - confirm against real infra sizing.
     mem_limit: 512m
     cpus: 1.0
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import pathlib; assert any('app.temporal.worker' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
+      test: ["CMD", "python", "-c", "import pathlib; assert any('app.workers.temporal.worker' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -133,13 +133,13 @@ services:
 
   analytics-consumer:
     build: .
-    command: python -m app.workers.analytics_consumer
+    command: python -m app.workers.kafka.analytics_consumer
     # Defaults - confirm against real infra sizing.
     mem_limit: 512m
     cpus: 1.0
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import pathlib; assert any('app.workers.analytics_consumer' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
+      test: ["CMD", "python", "-c", "import pathlib; assert any('app.workers.kafka.analytics_consumer' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
       interval: 30s
       timeout: 10s
       retries: 3

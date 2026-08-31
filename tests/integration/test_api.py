@@ -37,7 +37,7 @@ from app.models import (
     WaitlistStatus,
 )
 from app.repositories import AppointmentRepository
-from app.workflows.service_publish import chunk_service
+from app.workers.temporal.activities.service_publish import chunk_service
 
 
 @pytest.fixture()
@@ -853,7 +853,7 @@ def test_billing_precheck_is_idempotent(client):
 def test_analytics_consumer_deduplicates_replayed_visit_completed_event(client):
     from app.db import SessionLocal
     from app.models import AnalyticsAppointmentDaily, AnalyticsProcessedEvent
-    from app.workers.analytics_consumer import AnalyticsConsumer
+    from app.workers.kafka.analytics_consumer import AnalyticsConsumer
 
     consumer = AnalyticsConsumer()
     payload = {
@@ -1461,3 +1461,54 @@ def test_cancel_api_books_oldest_waitlisted_patient_and_lists_appointment(client
         assert refreshed_slot.status == SlotStatus.RESERVED
     finally:
         db.close()
+
+
+def test_notifications_endpoint(client):
+    from app.db import SessionLocal
+    from app.models import Notification, NotificationStatus, User
+
+    # Create patient and login
+    _create_user(client, "patient-notify@example.com", "secret123", "patient")
+    token = _login(client, "patient-notify@example.com", "secret123")
+
+    # Verify unauthorized access
+    resp = client.get("/api/v1/notifications")
+    assert resp.status_code == 401
+
+    # Verify authorized access (empty list first)
+    resp = client.get(
+        "/api/v1/notifications",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["items"] == []
+
+    # Insert a dummy notification for this user
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "patient-notify@example.com").one()
+        notification = Notification(
+            user_id=user.id,
+            type="APPOINTMENT_REMINDER",
+            payload={"appointment_id": 42, "channel": "email"},
+            status=NotificationStatus.PENDING,
+        )
+        db.add(notification)
+        db.commit()
+    finally:
+        db.close()
+
+    # Query again and check presence
+    resp = client.get(
+        "/api/v1/notifications",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["type"] == "APPOINTMENT_REMINDER"
+    assert data["items"][0]["payload"]["appointment_id"] == 42
+    assert data["items"][0]["status"] == "PENDING"
+

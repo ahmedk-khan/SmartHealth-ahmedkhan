@@ -22,7 +22,7 @@ def test_health_readiness_hides_raw_exception_class_names(monkeypatch, caplog):
 
     with caplog.at_level(logging.ERROR):
         client = TestClient(app)
-        response = client.get("/api/v1/health/ready")
+        response = client.get("/health/ready")
 
     assert response.status_code == 503
     payload = response.json()

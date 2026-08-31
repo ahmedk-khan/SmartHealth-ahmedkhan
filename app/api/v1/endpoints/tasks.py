@@ -1,8 +1,8 @@
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends
 
-from app.celery_app import celery_app
-from app.core.dependencies import require_admin_or_front_desk
+from app.workers.celery_app import celery_app
+from app.core.authorization import require_permission, Permission
 from app.models import User
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
     summary="Get task status",
     description="Checks the status of a background Celery task and returns its final or in-progress result when available.",
 )
-def get_task_status(task_id: str, current_user: User = Depends(require_admin_or_front_desk)) -> dict[str, object]:
+def get_task_status(task_id: str, current_user: User = Depends(require_permission(Permission.TASK_READ))) -> dict[str, object]:
     result = AsyncResult(task_id, app=celery_app)
     response: dict[str, object] = {"task_id": task_id, "state": result.state}
     if result.ready():
@@ -23,4 +23,3 @@ def get_task_status(task_id: str, current_user: User = Depends(require_admin_or_
         else:
             response["result"] = str(payload)
     return response
-

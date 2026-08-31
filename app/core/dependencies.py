@@ -6,7 +6,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app.core.exceptions import AppError, app_error, forbidden_error, invalid_token_error
+from app.core.exceptions import AppError, UnauthorizedError, ForbiddenError, invalid_token_error
 from app.core.security import decode_access_token
 from app.models import User, UserRole
 from app.repositories.auth import AuthRepository
@@ -32,9 +32,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except (TypeError, ValueError) as exc:
         raise invalid_token_error() from exc
     if not user:
-        raise AppError("User not found", status_code=401, error_type="user_not_found")
+        raise UnauthorizedError("User not found", code="USER_NOT_FOUND")
     if not user.is_active:
-        raise app_error("Inactive user", status_code=401, error_type="inactive_user")
+        raise UnauthorizedError("Inactive user", code="INACTIVE_USER")
     return user
 
 
@@ -51,7 +51,7 @@ def require_role(*roles: str | UserRole | Enum) -> Callable[[User], User]:
 
     def dependency(current_user: User = Depends(get_current_user)) -> User:
         if current_user.role.value not in allowed:
-            raise forbidden_error()
+            raise ForbiddenError()
         return current_user
 
     return dependency

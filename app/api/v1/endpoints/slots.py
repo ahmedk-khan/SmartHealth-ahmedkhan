@@ -1,9 +1,15 @@
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_db, require_patient, require_staff
-from app.core.authorization import ensure_provider_ownership, ensure_role
-from app.core.exceptions import AppError, forbidden_error
+from app.core.dependencies import get_db
+from app.core.authorization import require_permission, authorize, Permission
+from app.core.exceptions import (
+    NotFoundError,
+    PatientNotFoundError,
+    SlotNotFoundError,
+    ConflictError,
+    ValidationError,
+)
 from app.models import SlotStatus, User, UserRole
 from app.repositories import ProviderRepository, SlotRepository
 from app.schemas.domain import PaginatedResponse, SlotCreate, SlotRead
@@ -19,16 +25,16 @@ router = APIRouter(prefix="/slots", tags=["slots"])
     summary="Create slot",
     description="Creates a new availability slot for a provider/service combination. Restricted to admin, front desk, and provider roles.",
 )
-def create_slot(payload: SlotCreate, db: Session = Depends(get_db), current_user: User = Depends(require_staff)):
+def create_slot(payload: SlotCreate, db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.SLOT_CREATE))):
     repository = SlotRepository(db)
-    ensure_provider_ownership(
-        payload.provider_id,
+    authorize(
         current_user,
-        ProviderRepository(db),
-        "Providers can only publish their own availability",
+        Permission.SLOT_CREATE,
+        payload.provider_id,
+        provider_repository=ProviderRepository(db),
     )
     if not repository.validate_provider_and_service(payload.provider_id, payload.service_id):
-        raise AppError("Provider or service not found", status_code=404, error_type="not_found")
+        raise NotFoundError("Provider or service not found", code="PROVIDER_OR_SERVICE_NOT_FOUND")
     slot = repository.create_slot(payload.model_dump())
     HealthcareEventService(db).publish_resource_event("slot.created", entity_type="slot", entity_id=slot.id, provider_id=slot.provider_id, service_id=slot.service_id, status=slot.status.value)
     return slot
@@ -41,15 +47,15 @@ def create_slot(payload: SlotCreate, db: Session = Depends(get_db), current_user
     summary="Reserve a slot",
     description="Reserves a currently available slot for the authenticated patient.",
 )
-def reserve_slot(slot_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_patient)):
+def reserve_slot(slot_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.SLOT_RESERVE))):
     repository = SlotRepository(db)
     patient = repository.get_patient_by_user_id(current_user.id)
     if not patient:
-        raise AppError("Patient profile not found", status_code=404, error_type="not_found")
+        raise PatientNotFoundError("Patient profile not found")
 
     slot = repository.reserve_for_patient(slot_id, patient.id)
     if not slot:
-        raise AppError("Slot is no longer available", status_code=409, error_type="conflict")
+        raise ConflictError("Slot is no longer available", code="SLOT_NOT_AVAILABLE")
     return slot
 
 
@@ -59,42 +65,35 @@ def reserve_slot(slot_id: int, db: Session = Depends(get_db), current_user: User
     summary="List slots",
     description="Returns a paginated list of slots, filtered for patient availability when applicable.",
 )
-def list_slots(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_slots(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.SLOT_READ))):
     repository = SlotRepository(db)
     items, total = repository.list_slots(offset=offset, limit=limit, patient_only_available=current_user.role == UserRole.patient)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
-def _ensure_slot_access(slot, current_user: User, db: Session) -> None:
-    if current_user.role != UserRole.provider:
-        ensure_role(current_user, {UserRole.admin, UserRole.front_desk})
-        return
-    ensure_provider_ownership(slot.provider_id, current_user, ProviderRepository(db))
-
-
 @router.patch("/{slot_id}", response_model=SlotRead, summary="Update availability slot")
-def update_slot(slot_id: int, payload: SlotCreate, db: Session = Depends(get_db), current_user: User = Depends(require_staff)):
+def update_slot(slot_id: int, payload: SlotCreate, db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.SLOT_UPDATE))):
     slot = SlotRepository(db).get_by_id(slot_id)
     if not slot:
-        raise AppError("Slot not found", status_code=404, error_type="not_found")
-    _ensure_slot_access(slot, current_user, db)
+        raise SlotNotFoundError()
+    authorize(current_user, Permission.SLOT_UPDATE, slot, provider_repository=ProviderRepository(db))
     if slot.status != SlotStatus.AVAILABLE:
-        raise AppError("Booked slots cannot be edited", status_code=409, error_type="slot_not_editable")
+        raise ConflictError("Booked slots cannot be edited", code="SLOT_NOT_EDITABLE")
     if payload.provider_id != slot.provider_id or payload.patient_id is not None or payload.status != SlotStatus.AVAILABLE:
-        raise AppError("Only an available slot schedule can be edited", status_code=422, error_type="invalid_slot_update")
+        raise ValidationError("Only an available slot schedule can be edited", code="INVALID_SLOT_UPDATE")
     if payload.end_datetime <= payload.start_datetime:
-        raise AppError("End time must be after start time", status_code=422, error_type="invalid_slot_time")
+        raise ValidationError("End time must be after start time", code="INVALID_SLOT_TIME")
     return SlotRepository(db).update_slot(slot, payload.model_dump(exclude={"provider_id", "patient_id", "status"}))
 
 
 @router.delete("/{slot_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete availability slot")
-def delete_slot(slot_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_staff)):
+def delete_slot(slot_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.SLOT_DELETE))):
     repository = SlotRepository(db)
     slot = repository.get_by_id(slot_id)
     if not slot:
-        raise AppError("Slot not found", status_code=404, error_type="not_found")
-    _ensure_slot_access(slot, current_user, db)
+        raise SlotNotFoundError()
+    authorize(current_user, Permission.SLOT_DELETE, slot, provider_repository=ProviderRepository(db))
     if slot.status != SlotStatus.AVAILABLE:
-        raise AppError("Booked slots cannot be deleted", status_code=409, error_type="slot_not_deletable")
+        raise ConflictError("Booked slots cannot be deleted", code="SLOT_NOT_DELETABLE")
     repository.delete_slot(slot)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -5,27 +5,30 @@ from temporalio import client, worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from app.core.settings import settings
-from app.temporal.activities import (
+from app.workers.temporal.activities.appointment_saga import (
     cancel_pending_appointment,
-    cancel_reminder,
-    chunk_service,
     confirm_appointment,
     create_pending_appointment,
-    embed_chunks,
-    publish_service_published_event,
-    mark_publish_failed,
     mark_slot_reserved,
     release_slot,
-    reserve_slot,
     run_billing_precheck,
+    reserve_slot,
     send_reminder,
-    structure_service,
+    cancel_reminder,
     validate_appointment_data,
-    validate_service,
-    wait_for_worker_interruption,
     publish_appointment_created_event,
+    wait_for_worker_interruption,
 )
-from app.workflows import AppointmentSagaWorkflow, ServicePublishWorkflow
+from app.workers.temporal.activities.service_publish import (
+    chunk_service,
+    embed_chunks,
+    mark_publish_failed,
+    publish_service_published_event,
+    structure_service,
+    validate_service,
+)
+from app.workers.temporal.workflows.appointment_saga import AppointmentSagaWorkflow
+from app.workers.temporal.workflows.service_publish import ServicePublishWorkflow
 
 
 logger = logging.getLogger(__name__)

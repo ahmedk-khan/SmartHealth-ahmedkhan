@@ -4,4 +4,8 @@ import os
 
 
 os.environ["ASYNC_BOOKING_ENABLED"] = "false"
-os.environ["REDIS_URL"] = "redis://127.0.0.1:63999/0"
+os.environ.setdefault("REDIS_URL", "memory://")
+
+# Disable rate limiting for all test cases
+from app.core.rate_limit import limiter
+limiter.enabled = False

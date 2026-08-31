@@ -2,7 +2,7 @@ import logging
 import time
 import traceback
 
-from app.celery_app import celery_app
+from app.workers.celery_app import celery_app
 from app.core.exceptions import AppError
 from app.core.logging import get_correlation_id, get_request_id
 from app.core.metrics import record_celery_task
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 @celery_app.task(
     bind=True,
-    name="app.workers.tasks.analytics_tasks.rollup_daily_analytics",
+    name="app.workers.celery.analytics.rollup_daily_analytics",
     autoretry_for=(ConnectionError, TimeoutError),
     retry_backoff=True,
     retry_jitter=True,

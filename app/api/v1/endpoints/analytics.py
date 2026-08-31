@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db, require_admin_or_front_desk
+from app.core.dependencies import get_db
+from app.core.authorization import require_permission, Permission
 from app.models import User
 from app.services.analytics_service import AnalyticsService
 
@@ -17,7 +18,7 @@ def get_analytics_summary(
     start_date: str | None = Query(default=None),
     end_date: str | None = Query(default=None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_or_front_desk),
+    current_user: User = Depends(require_permission(Permission.ANALYTICS_READ)),
 ) -> dict[str, object]:
     service = AnalyticsService(db)
     return service.get_dashboard_metrics(start_date, end_date)
@@ -28,6 +29,6 @@ def get_analytics_summary(
     summary="Reconcile analytics",
     description="Runs a reconciliation pass to verify analytics data consistency and sync state across the system.",
 )
-def reconcile_analytics(db: Session = Depends(get_db), current_user: User = Depends(require_admin_or_front_desk)) -> dict[str, object]:
+def reconcile_analytics(db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.ANALYTICS_RECONCILE))) -> dict[str, object]:
     service = AnalyticsService(db)
     return service.reconcile_metrics()

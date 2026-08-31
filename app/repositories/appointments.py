@@ -73,7 +73,12 @@ class AppointmentRepository(BaseRepository):
         from app.models.audit import AuditLog
 
         appointment = self.get_by_id(appointment_id)
-        if appointment and appointment.status in {AppointmentStatus.REQUESTED, AppointmentStatus.SLOT_RESERVED, AppointmentStatus.PENDING}:
+        if appointment and appointment.status in {
+            AppointmentStatus.REQUESTED,
+            AppointmentStatus.SLOT_RESERVED,
+            AppointmentStatus.PENDING,
+            AppointmentStatus.CONFIRMED,
+        }:
             appointment.status = AppointmentStatus.CANCELLED
             appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
             self.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))

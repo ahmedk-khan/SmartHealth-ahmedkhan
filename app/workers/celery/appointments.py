@@ -3,7 +3,7 @@ import time
 import traceback
 import datetime
 
-from app.celery_app import celery_app
+from app.workers.celery_app import celery_app
 from app.core.exceptions import AppError
 from app.core.logging import get_correlation_id, get_request_id
 from app.core.metrics import record_celery_task
@@ -17,7 +17,7 @@ from app.core.idempotency import idempotency_store
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="app.workers.tasks.appointment_tasks.enqueue_due_appointment_reminders")
+@celery_app.task(name="app.workers.celery.appointments.enqueue_due_appointment_reminders")
 def enqueue_due_appointment_reminders() -> dict[str, int]:
     db = SessionLocal()
     try:
@@ -34,7 +34,7 @@ def enqueue_due_appointment_reminders() -> dict[str, int]:
 
 @celery_app.task(
     bind=True,
-    name="app.workers.tasks.appointment_tasks.send_appointment_reminder",
+    name="app.workers.celery.appointments.send_appointment_reminder",
     autoretry_for=(ConnectionError, TimeoutError),
     retry_backoff=True,
     retry_jitter=True,
@@ -165,3 +165,99 @@ def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
                 "correlation_id": correlation_id,
             }
         )
+
+
+@celery_app.task(
+    bind=True,
+    name="app.workers.celery.appointments.send_visit_follow_up",
+    autoretry_for=(ConnectionError, TimeoutError),
+    retry_backoff=True,
+    retry_jitter=True,
+    max_retries=3,
+)
+def send_visit_follow_up(self, appointment_id: int) -> dict[str, object]:
+    correlation_id = get_correlation_id()
+    request_id = get_request_id()
+    task_start_time = time.time()
+    
+    logger.info(
+        "Starting visit follow-up task",
+        extra={
+            "task_id": self.request.id,
+            "task_name": self.name,
+            "appointment_id": appointment_id,
+            "correlation_id": correlation_id,
+            "request_id": request_id,
+        }
+    )
+    
+    db = SessionLocal()
+    task_success = False
+    try:
+        service = NotificationService(db)
+        result = service.send_visit_follow_up(appointment_id)
+        task_success = True
+        return result
+    except AppError as exc:
+        logger.error(
+            "Visit follow-up task failed with AppError",
+            extra={
+                "task_id": self.request.id,
+                "appointment_id": appointment_id,
+                "correlation_id": correlation_id,
+                "error": str(exc),
+            },
+            exc_info=True
+        )
+        failed_service = FailedJobService(db)
+        failed_service.record_failure(
+            task_name=self.name,
+            task_id=self.request.id,
+            exc=exc,
+            payload={"appointment_id": appointment_id},
+            traceback_text=traceback.format_exc(),
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "Visit follow-up task failed with exception",
+            extra={
+                "task_id": self.request.id,
+                "appointment_id": appointment_id,
+                "correlation_id": correlation_id,
+                "error": str(exc),
+            },
+            exc_info=True
+        )
+        if isinstance(exc, (ConnectionError, TimeoutError)) and self.request.retries < self.max_retries:
+            logger.info(
+                "Retrying visit follow-up task",
+                extra={
+                    "task_id": self.request.id,
+                    "appointment_id": appointment_id,
+                    "retry_count": self.request.retries,
+                }
+            )
+            raise self.retry(exc=exc, countdown=30)
+        failed_service = FailedJobService(db)
+        failed_service.record_failure(
+            task_name=self.name,
+            task_id=self.request.id,
+            exc=exc,
+            payload={"appointment_id": appointment_id},
+            traceback_text=traceback.format_exc(),
+        )
+        raise
+    finally:
+        db.close()
+        
+        # Record task metrics
+        try:
+            task_duration = time.time() - task_start_time
+            record_celery_task(
+                task_name="send_visit_follow_up",
+                success=task_success,
+                duration_seconds=task_duration
+            )
+        except Exception as exc:
+            logger.error(f"Failed to record Celery task metric: {exc}", exc_info=True)

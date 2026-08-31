@@ -1,5 +1,6 @@
 from app.repositories.appointments import AppointmentRepository
 from app.repositories.analytics import AnalyticsRepository
+from app.repositories.ai_interactions import AIInteractionRepository
 from app.repositories.auth import AuthRepository
 from app.repositories.billing import BillingRepository
 from app.repositories.content_chunks import ContentChunkRepository
@@ -17,6 +18,7 @@ from app.repositories.waitlist import WaitlistRepository
 __all__ = [
     "AppointmentRepository",
     "AnalyticsRepository",
+    "AIInteractionRepository",
     "AuthRepository",
     "BillingRepository",
     "ContentChunkRepository",

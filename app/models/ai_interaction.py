@@ -10,6 +10,7 @@ class AIInteraction(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    question = Column(Text, nullable=False)
     intent = Column(String(120), nullable=False)
     retrieved_ids = Column(JSON, nullable=True)
     answer = Column(Text, nullable=True)

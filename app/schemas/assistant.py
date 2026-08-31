@@ -1,8 +1,29 @@
-from pydantic import BaseModel, Field
+from datetime import date
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AssistantAskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("question")
+    @classmethod
+    def normalize_question(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("question cannot be empty")
+        return normalized
+
+
+class AssistantReportRequest(BaseModel):
+    period_start: date
+    period_end: date
+
+    @model_validator(mode="after")
+    def validate_period(self):
+        if self.period_end < self.period_start:
+            raise ValueError("period_end must be on or after period_start")
+        return self
 
 
 class AssistantCitation(BaseModel):
@@ -12,8 +33,8 @@ class AssistantCitation(BaseModel):
 
 
 class UtilisationReport(BaseModel):
-    period_start: str
-    period_end: str
+    period_start: date
+    period_end: date
     appointments_booked: int = Field(ge=0)
     completed_visits: int = Field(ge=0)
     cancellations: int = Field(ge=0)

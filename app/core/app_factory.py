@@ -112,6 +112,7 @@ def create_app() -> FastAPI:
         {"name": "analytics", "description": "Operational and analytics summaries for reporting."},
         {"name": "public", "description": "Public-facing catalog endpoints available without authenticated access."},
         {"name": "search", "description": "Authenticated semantic search over published service content."},
+        {"name": "assistant", "description": "Healthcare navigation assistant and utilisation report generation."},
     ]
 
     app.add_middleware(CorrelationIdMiddleware)

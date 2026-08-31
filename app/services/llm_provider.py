@@ -30,7 +30,11 @@ class FakeLLM(LLMProvider):
             yield f"{token} "
 
     async def complete_json(self, prompt: str) -> str:
-        return "{}"
+        return (
+            '{"period_start":"1970-01-01","period_end":"1970-01-01",'
+            '"appointments_booked":0,"completed_visits":0,"cancellations":0,'
+            '"total_patients":0,"failed_workflows":0}'
+        )
 
 
 class OpenAICompatibleLLM(LLMProvider):

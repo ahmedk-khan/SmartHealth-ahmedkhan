@@ -1,5 +1,9 @@
+import asyncio
 from datetime import datetime, timezone
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -336,3 +340,91 @@ def test_utilisation_report_streams_and_uses_analytics(client):
     assert "event: done" in response.text
     assert '"appointments_booked": 1' in response.text
     assert '"total_patients": 1' in response.text
+
+
+def test_long_report_generation_does_not_block_booking(client, monkeypatch):
+    _create_user(client, "patient-book@example.com", "secret123", "patient")
+    _create_user(client, "provider-book@example.com", "secret123", "provider")
+    _create_user_record("admin-book@example.com", "secret123", "admin")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        patient_user = db.query(User).filter(User.email == "patient-book@example.com").one()
+        provider_user = db.query(User).filter(User.email == "provider-book@example.com").one()
+        patient = _ensure_patient(db, patient_user.id)
+        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
+        _department, service, slot = _seed_service(db, provider, name="Vaccination")
+        booking_slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 12, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 12, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(booking_slot)
+        db.commit()
+        db.refresh(booking_slot)
+        appointment = Appointment(
+            patient_id=patient.id,
+            provider_id=provider.id,
+            service_id=service.id,
+            slot_id=slot.id,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        db.add(appointment)
+        db.commit()
+    finally:
+        db.close()
+
+    class SlowLLM:
+        async def stream(self, prompt: str):
+            yield "summary "
+            yield "content "
+
+        async def complete_json(self, prompt: str) -> str:
+            await asyncio.sleep(2)
+            return (
+                '{"period_start":"2026-08-01","period_end":"2026-08-31",'
+                '"appointments_booked":0,"completed_visits":0,"cancellations":0,'
+                '"total_patients":0,"failed_workflows":0}'
+            )
+
+    import app.services.assistant_service as assistant_service_module
+
+    monkeypatch.setattr(assistant_service_module, "get_llm_provider", lambda: SlowLLM())
+
+    token = _login(client, "admin-book@example.com", "secret123")
+    report_done = threading.Event()
+
+    def run_report():
+        response = client.post(
+            "/assistant/report",
+            json={"period_start": "2026-08-01", "period_end": "2026-08-31"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        report_done.set()
+        return response
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future = executor.submit(run_report)
+        time.sleep(0.2)
+        booking_token = _login(client, "patient-book@example.com", "secret123")
+        booking_started = time.perf_counter()
+        booking_response = client.post(
+            "/api/v1/appointments",
+            json={"slot_id": booking_slot.id},
+            headers={"Authorization": f"Bearer {booking_token}"},
+        )
+        booking_elapsed = time.perf_counter() - booking_started
+        assert booking_response.status_code == 202
+        assert booking_elapsed < 1.0
+        assert report_done.wait(timeout=5) is True
+        response = future.result(timeout=5)
+
+    assert response.status_code == 200
+    assert "event: text" in response.text
+    assert "event: citations" in response.text
+    assert "event: done" in response.text

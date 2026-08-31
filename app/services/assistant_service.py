@@ -37,6 +37,7 @@ class AssistantService:
         decision = self.safety.classify(normalized)
         started_at = time.perf_counter()
         answer_parts: list[str] = []
+        final_answer = ""
         citations: list[dict[str, object]] = []
         refused = False
         retrieved_ids: list[int] = []
@@ -46,29 +47,50 @@ class AssistantService:
         try:
             if decision.refused:
                 answer = self._refusal_message(decision.acute)
+                final_answer = answer
                 refused = True
                 answer_parts = [answer]
-                yield {"type": "token", "value": answer}
+                yield {"type": "text", "value": answer}
             elif decision.intent == "appointment":
                 answer, citations, retrieved_ids = await self._answer_own_appointments(normalized, user)
+                final_answer = answer
                 for token in self._tokenize(answer):
                     answer_parts.append(token)
-                    yield {"type": "token", "value": token}
+                    yield {"type": "text", "value": token}
             elif decision.intent == "preparation":
                 answer, citations, retrieved_ids = await self._answer_preparation(normalized)
+                final_answer = answer
                 for token in self._tokenize(answer):
                     answer_parts.append(token)
-                    yield {"type": "token", "value": token}
+                    yield {"type": "text", "value": token}
             elif decision.intent == "availability":
                 answer, citations, retrieved_ids = await self._answer_availability(normalized)
+                final_answer = answer
                 for token in self._tokenize(answer):
                     answer_parts.append(token)
-                    yield {"type": "token", "value": token}
+                    yield {"type": "text", "value": token}
             else:
-                answer, citations, retrieved_ids = await self._answer_navigation(normalized)
-                for token in self._tokenize(answer):
-                    answer_parts.append(token)
-                    yield {"type": "token", "value": token}
+                results = await search_services(self.db, normalized, settings.retrieval_top_k)
+                if not results:
+                    answer = "we don't offer that"
+                    final_answer = answer
+                    citations = []
+                    retrieved_ids = []
+                    answer_parts = [answer]
+                    yield {"type": "text", "value": answer}
+                else:
+                    context = "\n---\n".join(
+                        f"[{item['department']}] {item['service_name']}. {item['content']}" for item in results
+                    )
+                    prompt = PROMPT_NAV_V1.format(clinic="SmartHealth", context=context, user_question=normalized)
+                    retrieved_ids = [item["service_id"] for item in results]
+                    citations = self._citations_from_results(results)
+                    async for token in self.provider.stream(prompt):
+                        answer_parts.append(token)
+                        yield {"type": "text", "value": token}
+                    final_answer = "".join(answer_parts).strip() or (
+                        f"Based on the clinic services I found, the best match is {results[0]['service_name']} in {results[0]['department']}."
+                    )
 
             yield {"type": "citations", "value": citations}
         except asyncio.CancelledError:
@@ -77,7 +99,7 @@ class AssistantService:
                 question=normalized,
                 intent=decision.intent,
                 retrieved_ids=retrieved_ids,
-                answer="".join(answer_parts).strip(),
+                answer=final_answer or "".join(answer_parts).strip(),
                 model_name=model_name,
                 refused=refused,
                 started_at=started_at,
@@ -93,7 +115,7 @@ class AssistantService:
                 question=normalized,
                 intent=decision.intent,
                 retrieved_ids=retrieved_ids,
-                answer="".join(answer_parts).strip(),
+                answer=final_answer or "".join(answer_parts).strip(),
                 model_name=model_name,
                 refused=refused,
                 started_at=started_at,
@@ -120,7 +142,7 @@ class AssistantService:
             report_json = json.dumps(raw_report.model_dump(mode="json"), sort_keys=True)
             for token in self._tokenize(report_json):
                 tokens.append(token)
-                yield {"type": "token", "value": token}
+                yield {"type": "text", "value": token}
             yield {"type": "report", "value": raw_report.model_dump(mode="json")}
             yield {"type": "citations", "value": citations}
             completed = True
@@ -156,30 +178,6 @@ class AssistantService:
                     input_tokens=self._estimate_tokens(f"{period_start} {period_end}"),
                     output_tokens=self._estimate_tokens("".join(tokens)),
                 )
-
-    async def _answer_navigation(self, question: str) -> tuple[str, list[dict[str, object]], list[int]]:
-        results = await search_services(self.db, question, settings.retrieval_top_k)
-        if not results:
-            return "we don't offer that", [], []
-
-        context = "\n---\n".join(
-            f"[{item['department']}] {item['service_name']}. {item['content']}" for item in results
-        )
-        prompt = PROMPT_NAV_V1.format(clinic="SmartHealth", context=context, user_question=question)
-        try:
-            response = await self.provider.complete_json(prompt)
-            if response.strip().startswith("{"):
-                parsed = json.loads(response)
-                answer = str(parsed.get("answer") or parsed.get("response") or "").strip()
-                if answer:
-                    return answer, self._citations_from_results(results), [item["service_id"] for item in results]
-        except Exception:
-            pass
-
-        answer = (
-            f"Based on the clinic services I found, the best match is {results[0]['service_name']} in {results[0]['department']}."
-        )
-        return answer, self._citations_from_results(results), [item["service_id"] for item in results]
 
     async def _answer_preparation(self, question: str) -> tuple[str, list[dict[str, object]], list[int]]:
         results = await search_services(self.db, question, settings.retrieval_top_k)

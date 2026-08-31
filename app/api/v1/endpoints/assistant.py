@@ -30,6 +30,8 @@ async def ask_assistant(
         async for event in service.stream_answer(normalized_question, current_user):
             if event["type"] == "citations":
                 yield f"event: citations\ndata: {json.dumps(event['value'])}\n\n"
+            elif event["type"] == "text":
+                yield f"event: text\ndata: {json.dumps({'token': event['value']})}\n\n"
             else:
                 yield f"data: {json.dumps({'token': event['value']})}\n\n"
         yield "event: done\ndata: {}\n\n"
@@ -52,10 +54,11 @@ async def generate_utilisation_report(
         async for event in service.stream_report(payload.period_start.isoformat(), payload.period_end.isoformat(), current_user):
             if event["type"] == "citations":
                 yield f"event: citations\ndata: {json.dumps(event['value'])}\n\n"
+            elif event["type"] == "text":
+                yield f"event: text\ndata: {json.dumps({'token': event['value']})}\n\n"
             elif event["type"] == "report":
                 report_payload = event["value"]
             else:
-                report_payload = event["value"]
                 yield f"data: {json.dumps({'token': event['value']})}\n\n"
         yield f"event: done\ndata: {json.dumps({'report': report_payload})}\n\n"
 

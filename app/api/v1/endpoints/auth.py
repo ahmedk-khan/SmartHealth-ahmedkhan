@@ -4,11 +4,12 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db
+from app.core.dependencies import get_db, get_current_user
 from app.core.rate_limit import limiter
 from app.core.settings import settings
+from app.models import User
 from app.services import AuthService
-from app.schemas.user import Token, UserCreate, UserLogin, UserRead
+from app.schemas.user import Token, UserCreate, UserLogin, UserRead, UserProfileRead, UserRole
 
 router = APIRouter(tags=["auth"])
 
@@ -49,3 +50,32 @@ def login(request: Request, user_in: UserLogin, db: Session = Depends(get_db)):
 def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     service = AuthService(db)
     return service.login(UserLogin(email=form_data.username, password=form_data.password))
+
+
+@router.get(
+    "/me",
+    response_model=UserProfileRead,
+    summary="Get current user profile",
+    description="Returns the currently authenticated user's details including profile IDs based on their role.",
+)
+def get_me(current_user: User = Depends(get_current_user)):
+    data = {
+        "id": current_user.id,
+        "email": current_user.email,
+        "role": current_user.role,
+        "created_at": current_user.created_at,
+    }
+    if current_user.role == UserRole.patient and current_user.patient:
+        data.update({
+            "patient_id": current_user.patient.id,
+            "first_name": current_user.patient.first_name,
+            "last_name": current_user.patient.last_name,
+        })
+    elif current_user.role == UserRole.provider and current_user.provider:
+        data.update({
+            "provider_id": current_user.provider.id,
+            "bio": current_user.provider.bio,
+            "specialty": current_user.provider.specialty,
+            "department_id": current_user.provider.department_id,
+        })
+    return data

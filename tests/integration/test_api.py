@@ -1512,3 +1512,41 @@ def test_notifications_endpoint(client):
     assert data["items"][0]["payload"]["appointment_id"] == 42
     assert data["items"][0]["status"] == "PENDING"
 
+
+def test_get_auth_me_endpoint(client):
+    # Register a patient and a provider
+    _create_user(client, "me-patient@example.com", "secret123", "patient")
+    _create_user(client, "me-provider@example.com", "secret123", "provider")
+
+    # Get tokens
+    patient_token = _login(client, "me-patient@example.com", "secret123")
+    provider_token = _login(client, "me-provider@example.com", "secret123")
+
+    # Test unauthorized access
+    resp = client.get("/auth/me")
+    assert resp.status_code == 401
+
+    # Test patient profile
+    resp_patient = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {patient_token}"}
+    )
+    assert resp_patient.status_code == 200
+    data_patient = resp_patient.json()
+    assert data_patient["email"] == "me-patient@example.com"
+    assert data_patient["role"] == "patient"
+    assert data_patient["patient_id"] is not None
+    assert data_patient["provider_id"] is None
+
+    # Test provider profile
+    resp_provider = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {provider_token}"}
+    )
+    assert resp_provider.status_code == 200
+    data_provider = resp_provider.json()
+    assert data_provider["email"] == "me-provider@example.com"
+    assert data_provider["role"] == "provider"
+    assert data_provider["provider_id"] is not None
+    assert data_provider["patient_id"] is None
+

@@ -1550,3 +1550,137 @@ def test_get_auth_me_endpoint(client):
     assert data_provider["provider_id"] is not None
     assert data_provider["patient_id"] is None
 
+
+# ─── Missing Services & Slots Read Routes ─────────────────────────────────────
+
+def _seed_service_and_slot_for_tests(prov_email):
+    """Seed a department, published service, and AVAILABLE slot. Returns (service_id, slot_id, provider_id)."""
+    from app.db import SessionLocal
+    from app.models import Department, Service, Slot, SlotStatus, User, Provider
+    from datetime import datetime, timezone
+
+    db = SessionLocal()
+    try:
+        provider_user = db.query(User).filter(User.email == prov_email).one()
+        provider = db.query(Provider).filter(Provider.user_id == provider_user.id).first()
+        if provider is None:
+            provider = Provider(user_id=provider_user.id)
+            db.add(provider)
+            db.flush()
+
+        dept = Department(name="RouteTestDept", description="test")
+        db.add(dept)
+        db.flush()
+
+        svc = Service(
+            name="RouteTestService",
+            department_id=dept.id,
+            is_published=True,
+            status="PUBLISHED",
+        )
+        db.add(svc)
+        db.flush()
+
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=svc.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2027, 3, 10, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2027, 3, 10, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+        db.refresh(svc)
+        db.refresh(slot)
+        db.refresh(provider)
+        return svc.id, slot.id, provider.id
+    finally:
+        db.close()
+
+
+def test_get_service_by_id(client):
+    """GET /api/v1/services/{id} — patients see published; unknown returns 404."""
+    _create_user(client, "routeprov@example.com", "secret123", "provider")
+    _create_user(client, "routepat@example.com", "secret123", "patient")
+    prov_token = _login(client, "routeprov@example.com", "secret123")
+    pat_token = _login(client, "routepat@example.com", "secret123")
+
+    service_id, _slot_id, _provider_id = _seed_service_and_slot_for_tests("routeprov@example.com")
+
+    # Patient can view published service
+    resp = client.get(f"/api/v1/services/{service_id}", headers={"Authorization": f"Bearer {pat_token}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == service_id
+    assert data["name"] == "RouteTestService"
+
+    # Provider can view service
+    resp2 = client.get(f"/api/v1/services/{service_id}", headers={"Authorization": f"Bearer {prov_token}"})
+    assert resp2.status_code == 200
+
+    # Non-existent service returns 404
+    resp3 = client.get("/api/v1/services/99999", headers={"Authorization": f"Bearer {pat_token}"})
+    assert resp3.status_code == 404
+
+
+def test_get_slot_by_id(client):
+    """GET /api/v1/slots/{id} — patients see AVAILABLE only; 404 for unknown."""
+    prov_token = _login(client, "routeprov@example.com", "secret123")
+    pat_token = _login(client, "routepat@example.com", "secret123")
+
+    _service_id, slot_id, _provider_id = _seed_service_and_slot_for_tests("routeprov@example.com")
+
+    # Patient can view AVAILABLE slot
+    resp = client.get(f"/api/v1/slots/{slot_id}", headers={"Authorization": f"Bearer {pat_token}"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "AVAILABLE"
+
+    # Provider can view slot
+    resp2 = client.get(f"/api/v1/slots/{slot_id}", headers={"Authorization": f"Bearer {prov_token}"})
+    assert resp2.status_code == 200
+
+    # Non-existent slot returns 404
+    resp3 = client.get("/api/v1/slots/99999", headers={"Authorization": f"Bearer {pat_token}"})
+    assert resp3.status_code == 404
+
+
+def test_list_slots_by_provider(client):
+    """GET /api/v1/slots/providers/{id} — patients see AVAILABLE only; provider sees own slots."""
+    prov_token = _login(client, "routeprov@example.com", "secret123")
+    pat_token = _login(client, "routepat@example.com", "secret123")
+
+    _service_id, _slot_id, provider_id = _seed_service_and_slot_for_tests("routeprov@example.com")
+
+    # Patient sees only AVAILABLE slots
+    resp = client.get(f"/api/v1/slots/providers/{provider_id}", headers={"Authorization": f"Bearer {pat_token}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "items" in data and "total" in data
+    for item in data["items"]:
+        assert item["status"] == "AVAILABLE"
+
+    # Provider sees their own slots
+    resp2 = client.get(f"/api/v1/slots/providers/{provider_id}", headers={"Authorization": f"Bearer {prov_token}"})
+    assert resp2.status_code == 200
+
+
+def test_list_slots_by_service(client):
+    """GET /api/v1/services/{id}/slots — patients see AVAILABLE only."""
+    prov_token = _login(client, "routeprov@example.com", "secret123")
+    pat_token = _login(client, "routepat@example.com", "secret123")
+
+    service_id, _slot_id, _provider_id = _seed_service_and_slot_for_tests("routeprov@example.com")
+
+    # Patient sees AVAILABLE slots for that service
+    resp = client.get(f"/api/v1/services/{service_id}/slots", headers={"Authorization": f"Bearer {pat_token}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "items" in data and "total" in data
+    for item in data["items"]:
+        assert item["status"] == "AVAILABLE"
+
+    # Provider sees all slots for that service
+    resp2 = client.get(f"/api/v1/services/{service_id}/slots", headers={"Authorization": f"Bearer {prov_token}"})
+    assert resp2.status_code == 200
+
+

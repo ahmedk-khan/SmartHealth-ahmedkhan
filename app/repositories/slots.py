@@ -57,6 +57,36 @@ class SlotRepository(BaseRepository):
         items = query.order_by(Slot.start_datetime).offset(offset).limit(limit).all()
         return items, total
 
+    def list_by_provider(
+        self,
+        provider_id: int,
+        offset: int,
+        limit: int,
+        available_only: bool = False,
+    ) -> tuple[list[Slot], int]:
+        """Return all slots for a given provider, optionally filtered to AVAILABLE only."""
+        query = self.db.query(Slot).filter(Slot.provider_id == provider_id)
+        if available_only:
+            query = query.filter(Slot.status == SlotStatus.AVAILABLE)
+        total = query.count()
+        items = query.order_by(Slot.start_datetime).offset(offset).limit(limit).all()
+        return items, total
+
+    def list_by_service(
+        self,
+        service_id: int,
+        offset: int,
+        limit: int,
+        available_only: bool = False,
+    ) -> tuple[list[Slot], int]:
+        """Return all slots for a given service, optionally filtered to AVAILABLE only."""
+        query = self.db.query(Slot).filter(Slot.service_id == service_id)
+        if available_only:
+            query = query.filter(Slot.status == SlotStatus.AVAILABLE)
+        total = query.count()
+        items = query.order_by(Slot.start_datetime).offset(offset).limit(limit).all()
+        return items, total
+
     def validate_provider_and_service(self, provider_id: int, service_id: int) -> bool:
         provider = self.db.query(Provider).filter(Provider.id == provider_id).first()
         service = self.db.query(Service).filter(Service.id == service_id).first()

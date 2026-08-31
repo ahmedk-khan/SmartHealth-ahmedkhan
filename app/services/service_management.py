@@ -64,6 +64,41 @@ class ServiceManagementService(BaseService):
         HealthcareEventService(self.db).publish_service_event("service.created", service_id=created.id, department_id=created.department_id, status=created.status.value)
         return created
 
+    def get_service(self, service_id: int, current_user: User):
+        """Fetch a single service by ID with role-aware visibility."""
+        authorize(current_user, Permission.SERVICE_READ)
+        service = self.repository.get_by_id(service_id)
+        if not service:
+            raise not_found_error("Service not found")
+        # Patients can only see published services
+        if current_user.role == UserRole.patient and not service.is_published:
+            raise not_found_error("Service not found")
+        self.log_info(
+            "Service fetched",
+            operation="get_service",
+            data={"service_id": service_id, "role": current_user.role},
+        )
+        return service
+
+    def list_services(
+        self,
+        offset: int,
+        limit: int,
+        current_user: User,
+        search: str | None = None,
+        department_id: int | None = None,
+    ):
+        """Return paginated services. Patients only see published; staff see all."""
+        authorize(current_user, Permission.SERVICE_READ)
+        if current_user.role in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+            items, total = self.repository.list_all(offset=offset, limit=limit)
+        else:
+            items, total = self.repository.list_published(
+                offset=offset, limit=limit, search=search, department_id=department_id
+            )
+        self.log_info("Services listed", operation="list_services", data={"total": total})
+        return items, total
+
     def update_service(self, service_id: int, payload, current_user: User):
         service = self.repository.get_by_id(service_id)
         if not service:

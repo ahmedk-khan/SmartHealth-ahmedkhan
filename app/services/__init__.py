@@ -2,6 +2,7 @@ __all__ = [
     "AppointmentService",
     "AuthService",
     "ServiceManagementService",
+    "SlotService",
 ]
 
 
@@ -18,4 +19,8 @@ def __getattr__(name):
         from app.services.service_management import ServiceManagementService
 
         return ServiceManagementService
+    if name == "SlotService":
+        from app.services.slot_service import SlotService
+
+        return SlotService
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

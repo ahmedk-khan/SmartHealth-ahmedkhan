@@ -4,6 +4,7 @@ from app.repositories.ai_interactions import AIInteractionRepository
 from app.repositories.auth import AuthRepository
 from app.repositories.billing import BillingRepository
 from app.repositories.content_chunks import ContentChunkRepository
+from app.repositories.generated_content import GeneratedContentRepository
 from app.repositories.departments import DepartmentRepository
 from app.repositories.failed_jobs import FailedJobRepository
 from app.repositories.health import HealthRepository
@@ -22,6 +23,7 @@ __all__ = [
     "AuthRepository",
     "BillingRepository",
     "ContentChunkRepository",
+    "GeneratedContentRepository",
     "DepartmentRepository",
     "FailedJobRepository",
     "HealthRepository",

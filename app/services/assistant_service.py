@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.authorization import Permission, authorize
 from app.core.settings import settings
 from app.models import User
-from app.repositories import AIInteractionRepository, AppointmentRepository, PatientRepository, ProviderRepository, ServiceRepository, SlotRepository
+from app.repositories import AIInteractionRepository, AppointmentRepository, GeneratedContentRepository, PatientRepository, ProviderRepository, ServiceRepository, SlotRepository
 from app.services.assistant_prompts import DISCLAIMER, PROMPT_NAV_V1, PROMPT_VERSION_ASSISTANT, PROMPT_VERSION_REPORT
 from app.services.llm_provider import LLMProvider, get_llm_provider
 from app.services.safety_service import SafetyCheck
@@ -129,6 +129,7 @@ class AssistantService:
         util_service = UtilisationService(self.db, self.provider)
         started_at = time.perf_counter()
         tokens: list[str] = []
+        report_payload: dict[str, object] | None = None
         citations = [
             {
                 "source": "analytics_daily",
@@ -139,29 +140,36 @@ class AssistantService:
         completed = False
         try:
             raw_report = await util_service.generate(period_start, period_end)
-            report_json = json.dumps(raw_report.model_dump(mode="json"), sort_keys=True)
+            report_payload = raw_report.model_dump(mode="json")
+            await self._persist_generated_content(
+                content=report_payload,
+                content_type="utilisation_report",
+                report_scope=f"{period_start}..{period_end}",
+                model_name=settings.llm_model,
+                prompt_version=PROMPT_VERSION_REPORT,
+            )
+            report_json = json.dumps(report_payload, sort_keys=True)
             for token in self._tokenize(report_json):
                 tokens.append(token)
                 yield {"type": "text", "value": token}
-            yield {"type": "report", "value": raw_report.model_dump(mode="json")}
+            yield {"type": "report", "value": report_payload}
             yield {"type": "citations", "value": citations}
             completed = True
         except asyncio.CancelledError:
             logger.info("Assistant report stream truncated by client disconnect", extra={"user_id": user.id})
-            if tokens:
-                await self._persist_interaction(
-                    user_id=user.id,
-                    question=f"utilisation report {period_start}..{period_end}",
-                    intent="utilisation_report",
-                    retrieved_ids=[],
-                    answer="".join(tokens).strip(),
-                    model_name=settings.llm_model,
-                    refused=False,
-                    started_at=started_at,
-                    prompt_version=PROMPT_VERSION_REPORT,
-                    input_tokens=self._estimate_tokens(f"{period_start} {period_end}"),
-                    output_tokens=self._estimate_tokens("".join(tokens)),
-                )
+            await self._persist_interaction(
+                user_id=user.id,
+                question=f"utilisation report {period_start}..{period_end}",
+                intent="utilisation_report",
+                retrieved_ids=[],
+                answer=json.dumps(report_payload, sort_keys=True) if report_payload is not None else "".join(tokens).strip(),
+                model_name=settings.llm_model,
+                refused=False,
+                started_at=started_at,
+                prompt_version=PROMPT_VERSION_REPORT,
+                input_tokens=self._estimate_tokens(f"{period_start} {period_end}"),
+                output_tokens=self._estimate_tokens("".join(tokens)) if report_payload is None else self._estimate_tokens(json.dumps(report_payload, sort_keys=True)),
+            )
             raise
         finally:
             if completed:
@@ -170,13 +178,13 @@ class AssistantService:
                     question=f"utilisation report {period_start}..{period_end}",
                     intent="utilisation_report",
                     retrieved_ids=[],
-                    answer="".join(tokens).strip(),
+                    answer=json.dumps(report_payload, sort_keys=True) if report_payload is not None else "".join(tokens).strip(),
                     model_name=settings.llm_model,
                     refused=False,
                     started_at=started_at,
                     prompt_version=PROMPT_VERSION_REPORT,
                     input_tokens=self._estimate_tokens(f"{period_start} {period_end}"),
-                    output_tokens=self._estimate_tokens("".join(tokens)),
+                    output_tokens=self._estimate_tokens(json.dumps(report_payload, sort_keys=True)) if report_payload is not None else self._estimate_tokens("".join(tokens)),
                 )
 
     async def _answer_preparation(self, question: str) -> tuple[str, list[dict[str, object]], list[int]]:
@@ -304,6 +312,32 @@ class AssistantService:
                     output_tokens=output_tokens,
                     latency_ms=latency_ms,
                     refused=refused,
+                )
+            finally:
+                session.close()
+
+        await asyncio.to_thread(_write)
+
+    async def _persist_generated_content(
+        self,
+        *,
+        content: dict[str, object],
+        content_type: str,
+        report_scope: str | None,
+        model_name: str,
+        prompt_version: str,
+    ) -> None:
+        def _write() -> None:
+            from app import db as db_module
+
+            session = db_module.SessionLocal()
+            try:
+                GeneratedContentRepository(session).create_generated_content(
+                    type=content_type,
+                    content=content,
+                    report_scope=report_scope,
+                    model=model_name,
+                    prompt_version=prompt_version,
                 )
             finally:
                 session.close()

@@ -27,14 +27,18 @@ async def ask_assistant(
     normalized_question = service.safety.normalize(payload.question)
 
     async def events() -> AsyncIterator[str]:
+        citations: list[dict[str, object]] = []
+        final_answer = ""
         async for event in service.stream_answer(normalized_question, current_user):
             if event["type"] == "citations":
-                yield f"event: citations\ndata: {json.dumps(event['value'])}\n\n"
+                citations = event["value"]
+                yield f"event: citations\ndata: {json.dumps(citations)}\n\n"
             elif event["type"] == "text":
+                final_answer += event["value"]
                 yield f"event: text\ndata: {json.dumps({'token': event['value']})}\n\n"
             else:
                 yield f"data: {json.dumps({'token': event['value']})}\n\n"
-        yield "event: done\ndata: {}\n\n"
+        yield f"event: done\ndata: {json.dumps({'answer': final_answer.strip(), 'citations': citations})}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -59,7 +63,12 @@ async def generate_utilisation_report(
             elif event["type"] == "report":
                 report_payload = event["value"]
             else:
-                yield f"data: {json.dumps({'token': event['value']})}\n\n"
+                continue
+        if report_payload is None:
+            report_payload = {
+                "period_start": payload.period_start.isoformat(),
+                "period_end": payload.period_end.isoformat(),
+            }
         yield f"event: done\ndata: {json.dumps({'report': report_payload})}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")

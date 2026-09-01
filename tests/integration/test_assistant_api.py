@@ -22,6 +22,7 @@ from app.models import (
     Appointment,
     AppointmentStatus,
     Department,
+    GeneratedContent,
     Patient,
     Provider,
     Service,
@@ -161,6 +162,7 @@ def test_assistant_refuses_diagnosis_and_persists_refusal(client):
     assert "This is not medical advice" in response.text
     assert "event: citations" in response.text
     assert "event: done" in response.text
+    assert response.text.rfind("event: text") < response.text.find("event: citations") < response.text.find("event: done")
 
     from app.db import SessionLocal
 
@@ -340,6 +342,23 @@ def test_utilisation_report_streams_and_uses_analytics(client):
     assert "event: done" in response.text
     assert '"appointments_booked": 1' in response.text
     assert '"total_patients": 1' in response.text
+    assert response.text.rfind("event: text") < response.text.find("event: citations") < response.text.find("event: done")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        generated_rows = db.query(GeneratedContent).all()
+        assert len(generated_rows) == 1
+        generated = generated_rows[0]
+        assert generated.type == "utilisation_report"
+        assert generated.report_scope == "2026-08-01..2026-08-31"
+        assert generated.prompt_version == "PROMPT_REPORT_V1"
+        assert generated.model is not None
+        assert generated.content["appointments_booked"] == 1
+        assert generated.content["total_patients"] == 1
+    finally:
+        db.close()
 
 
 def test_long_report_generation_does_not_block_booking(client, monkeypatch):

@@ -14,11 +14,12 @@ class SafetyDecision:
 class SafetyCheck:
     """Conservative, deterministic gate that runs before embeddings or retrieval."""
 
-    _medical = re.compile(r"\b(diagnos|cause|caused|symptom|treat|treatment|medication|medicine|prescri|dose|dosage|what do i have|what's wrong with me|prescribe)\w*\b", re.I)
-    _acute = re.compile(r"\b(chest pain|difficulty breathing|can't breathe|cannot breathe|stroke|unconscious|severe bleeding|overdose|suicid)\w*\b", re.I)
+    _medical = re.compile(r"\b(diagnos|cause|caused|symptom|pain|ache|burn\w*|burin\w*|treat|treatment|medication|medicine|prescri|dose|dosage|what do i have|what's wrong with me|prescribe)\w*\b", re.I)
+    _acute = re.compile(r"\b(?:heart|chest)\b.{0,30}\b(?:pain|ache|burn\w*|burin\w*)\b|\b(chest pain|heart pain|heart ache|difficulty breathing|can't breathe|cannot breathe|stroke|unconscious|severe bleeding|overdose|suicid)\w*\b", re.I)
     _preparation = re.compile(r"\b(prepare|preparation|bring|fast|fasting|arrive|metal|instructions)\w*\b", re.I)
     _availability = re.compile(r"\b(available|availability|open slot|open slots|when can i|book|appointment|appointments|schedule)\w*\b", re.I)
     _appointment = re.compile(r"\b(my appointment|my appointments|reschedule my|cancel my|when is my|check my appointment|appointment status)\b", re.I)
+    _specialist_navigation = re.compile(r"\b(which|what|who)\b.{0,40}\b(specialist|doctor|department|service)\b|\bwho should i see\b", re.I)
     _gibberish = re.compile(r"^(?:[bcdfghjklmnpqrstvwxyz]{6,}|[a-z]{1,2}\d{3,}|(?:\W|_)+)$", re.I)
 
     def normalize(self, question: str) -> str:
@@ -48,10 +49,15 @@ class SafetyCheck:
         alnum_count = sum(1 for char in compact if char.isalnum())
         if alnum_count and (alpha_count / alnum_count) < 0.3:
             return True
+        # Reject low-information strings that are mostly consonants or repeated noise.
+        if len(compact) >= 10 and vowel_count / max(alpha_count, 1) < 0.22:
+            return True
         return False
 
     def classify(self, question: str) -> SafetyDecision:
         acute = bool(self._acute.search(question))
+        if self._specialist_navigation.search(question) and not acute:
+            return SafetyDecision("specialist_navigation", False)
         if self._medical.search(question) or acute:
             return SafetyDecision("acute_medical_advice" if acute else "medical_advice", True, acute)
         if self._appointment.search(question):

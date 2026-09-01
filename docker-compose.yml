@@ -133,13 +133,13 @@ services:
 
   analytics-consumer:
     build: .
-    command: python -m app.workers.kafka.analytics_consumer
+    command: python -m app.workers.kafka.consumers.analytics_consumer
     # Defaults - confirm against real infra sizing.
     mem_limit: 512m
     cpus: 1.0
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import pathlib; assert any('app.workers.kafka.analytics_consumer' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
+      test: ["CMD", "python", "-c", "import pathlib; assert any('app.workers.kafka.consumers.analytics_consumer' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -5,6 +5,7 @@ from pydantic import field_validator, model_validator
 
 class Settings(BaseSettings):
     app_env: str = "local"
+    build_revision: str = Field(default="development", alias="BUILD_REVISION")
     log_level: str = "INFO"
     database_url: str | None = Field(default=None, alias="DATABASE_URL")
     db_pool_size: int = Field(default=5, ge=1, alias="DB_POOL_SIZE")
@@ -41,9 +42,14 @@ class Settings(BaseSettings):
     retrieval_top_k: int = Field(default=5, alias="RETRIEVAL_TOP_K")
     retrieval_min_similarity: float = Field(default=0.60, alias="RETRIEVAL_MIN_SIMILARITY")
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")
+    llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
+    ai_conversation_key: str = Field(default="", alias="AI_CONVERSATION_KEY")
     llm_base_url: str = Field(default="https://api.openai.com/v1", alias="LLM_BASE_URL")
     llm_model: str = Field(default="gpt-4o-mini", alias="LLM_MODEL")
+    use_fake_llm: bool = Field(default=False, alias="USE_FAKE_LLM")
     llm_timeout_seconds: float = Field(default=60, ge=1, alias="LLM_TIMEOUT_SECONDS")
+    ai_rate_limit_per_minute: int = Field(default=30, ge=1, alias="AI_RATE_LIMIT_PER_MINUTE")
+    ai_cache_ttl_seconds: int = Field(default=300, ge=1, alias="AI_CACHE_TTL_SECONDS")
     booking_demo_pause_seconds: float = Field(default=0, ge=0, le=300, alias="BOOKING_DEMO_PAUSE_SECONDS")
     async_booking_enabled: bool = Field(default=False, alias="ASYNC_BOOKING_ENABLED")
     booking_workflow_timeout_minutes: int = Field(default=30, ge=1, le=1440, alias="BOOKING_WORKFLOW_TIMEOUT_MINUTES")
@@ -52,6 +58,9 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_production_security(self):
         environment = self.app_env.lower()
+        supported_providers = {"openai", "groq"}
+        if self.llm_provider.lower() not in supported_providers:
+            raise ValueError(f"Unsupported LLM provider: {self.llm_provider}")
         if not self.cors_allowed_origins and environment in {"local", "test", "development", "dev"}:
             self.cors_allowed_origins = ["http://localhost:3000", "http://localhost:8000"]
         if not self.database_url:
@@ -67,6 +76,8 @@ class Settings(BaseSettings):
             }
             if self.jwt_secret in known_bad_secrets or len(self.jwt_secret) < 32:
                 raise ValueError("JWT_SECRET must be a unique secret of at least 32 characters in production")
+            if not self.llm_api_key.strip():
+                raise ValueError("LLM_API_KEY must be set in production")
         return self
 
     @field_validator("cors_allowed_origins", mode="before")
@@ -78,7 +89,11 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
-    model_config = SettingsConfigDict(extra="ignore")
+    model_config = SettingsConfigDict(
+        extra="ignore",
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
 
 
 settings = Settings()

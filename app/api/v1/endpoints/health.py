@@ -101,6 +101,11 @@ def health():
     return {"status": "ok"}
 
 
+@router.get("/health/version", tags=["health"], summary="Build version")
+def version():
+    return {"revision": settings.build_revision, "ai_pipeline": "safety-first-v3"}
+
+
 @router.get(
     "/health/ready",
     tags=["health"],

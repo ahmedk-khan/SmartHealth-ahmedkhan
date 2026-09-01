@@ -17,7 +17,13 @@ from app.workers.temporal.activities.appointment_saga import (
     cancel_reminder,
     validate_appointment_data,
     publish_appointment_created_event,
-    wait_for_worker_interruption,
+)
+from app.workers.temporal.activities.billing_activities import charge_activity, refund_activity
+from app.workers.temporal.activities.notification_activities import send_confirmation_activity
+from app.workers.temporal.activities.scheduling_activities import (
+    release_slot_activity,
+    reserve_slot_activity,
+    validate_slot_activity,
 )
 from app.workers.temporal.activities.service_publish import (
     chunk_service,
@@ -27,7 +33,7 @@ from app.workers.temporal.activities.service_publish import (
     structure_service,
     validate_service,
 )
-from app.workers.temporal.workflows.appointment_saga import AppointmentSagaWorkflow
+from app.workers.temporal.workflows.appointment_saga import AppointmentReservationSagaWorkflow, AppointmentSagaWorkflow
 from app.workers.temporal.workflows.service_publish import ServicePublishWorkflow
 
 
@@ -60,7 +66,7 @@ def main() -> None:
                 ),
             ),
             task_queue=settings.temporal_task_queue,
-            workflows=[ServicePublishWorkflow, AppointmentSagaWorkflow],
+            workflows=[ServicePublishWorkflow, AppointmentSagaWorkflow, AppointmentReservationSagaWorkflow],
             activities=[
                 validate_service,
                 structure_service,
@@ -78,8 +84,13 @@ def main() -> None:
                 release_slot,
                 cancel_pending_appointment,
                 create_pending_appointment,
-                wait_for_worker_interruption,
                 publish_appointment_created_event,
+                validate_slot_activity,
+                reserve_slot_activity,
+                release_slot_activity,
+                charge_activity,
+                refund_activity,
+                send_confirmation_activity,
             ],
         )
         await temporal_worker.run()

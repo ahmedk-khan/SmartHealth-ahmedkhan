@@ -31,6 +31,79 @@ from app.workers.temporal.activities.appointment_saga import (
     validate_appointment_data,
     _non_retryable,
 )
+from app.workers.temporal.activities.billing_activities import charge_activity, refund_activity
+from app.workers.temporal.activities.notification_activities import send_confirmation_activity
+from app.workers.temporal.activities.scheduling_activities import (
+    release_slot_activity,
+    reserve_slot_activity,
+    validate_slot_activity,
+)
+from app.workers.temporal.contracts import ChargeInput, ConfirmationInput, ReservationInput
+
+
+@workflow.defn
+class AppointmentReservationSagaWorkflow:
+    """Deterministically orchestrate slot reservation, billing, and confirmation.
+
+    Workflow code may branch and compensate based on activity results only. It
+    must not perform database, HTTP, clock, random, or other I/O operations.
+    """
+
+    @workflow.run
+    async def run(self, input: dict[str, Any]) -> dict[str, Any]:
+        slot_id = int(input["slot_id"])
+        user_id = int(input["user_id"])
+        appointment_id = int(input["appointment_id"])
+        amount = input["amount"]
+
+        await workflow.execute_activity(
+            validate_slot_activity,
+            slot_id,
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=BUSINESS_ACTIVITY_RETRY,
+        )
+
+        await workflow.execute_activity(
+            reserve_slot_activity,
+            ReservationInput(slot_id=slot_id, user_id=user_id),
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=BUSINESS_ACTIVITY_RETRY,
+        )
+
+        charge = None
+        try:
+            charge = await workflow.execute_activity(
+                charge_activity,
+                ChargeInput(user_id=user_id, amount=amount),
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=BUSINESS_ACTIVITY_RETRY,
+            )
+        except Exception:
+            await workflow.execute_activity(
+                release_slot_activity,
+                slot_id,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=COMPENSATION_RETRY,
+            )
+            raise
+
+        try:
+            confirmation = await workflow.execute_activity(
+                send_confirmation_activity,
+                ConfirmationInput(user_id=user_id, appointment_id=appointment_id),
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=BUSINESS_ACTIVITY_RETRY,
+            )
+        except Exception:
+            # Notification delivery is best-effort and never rolls back billing.
+            confirmation = {"status": "NOTIFICATION_FAILED"}
+
+        return {
+            "status": "CONFIRMED",
+            "slot_id": slot_id,
+            "charge_id": charge.charge_id,
+            "confirmation": confirmation,
+        }
 
 logger = logging.getLogger(__name__)
 

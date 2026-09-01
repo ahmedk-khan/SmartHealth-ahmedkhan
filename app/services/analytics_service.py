@@ -2,6 +2,8 @@ import datetime
 
 from app.core.exceptions import app_error
 from app.repositories.analytics import AnalyticsRepository
+from app.repositories.ai_interactions import AIInteractionRepository
+from app.core.metrics import set_ai_booking_conversion_rate, set_ai_booking_conversions
 from app.services.base import BaseService
 
 
@@ -9,6 +11,7 @@ class AnalyticsService(BaseService):
     def __init__(self, db):
         super().__init__(db)
         self.repository = AnalyticsRepository(db)
+        self.ai_repository = AIInteractionRepository(db)
 
     def _raw_dashboard_metrics(self, start_date: str | None = None, end_date: str | None = None) -> dict[str, int | float]:
         return self.repository.raw_dashboard_metrics(start_date, end_date)
@@ -71,3 +74,9 @@ class AnalyticsService(BaseService):
             "raw_metrics": raw_metrics,
             "drift": drift,
         }
+
+    def get_ai_metrics(self) -> dict[str, int | float]:
+        metrics = self.ai_repository.summary()
+        set_ai_booking_conversions(int(metrics["booking_conversions"]))
+        set_ai_booking_conversion_rate(float(metrics["booking_conversion_rate"]))
+        return metrics

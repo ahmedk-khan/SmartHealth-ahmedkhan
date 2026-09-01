@@ -4,6 +4,10 @@
 
 SmartHealth uses **Apache Temporal** for durable, reliable workflow orchestration. Temporal is a platform that ensures workflows execute reliably even if services crash or network fails - it's like a "workflow database" that can replay executions.
 
+> **Layering note:** Current code lives under `app/workers/temporal/`.
+> Workflows orchestrate deterministically, activities are thin adapters,
+> services contain business rules, and repositories contain persistence code.
+
 ---
 
 ## What is Temporal?
@@ -37,8 +41,8 @@ Request → Workflow starts (recorded in database)
 A workflow is the orchestration logic - it decides what to do. Like a state machine.
 
 **SmartHealth Workflows:**
-- Location: [app/workflows/appointment_saga.py](../../app/workflows/appointment_saga.py)
-- Location: [app/workflows/service_publish.py](../../app/workflows/service_publish.py)
+- Location: [app/workers/temporal/workflows/appointment_saga.py](../../app/workers/temporal/workflows/appointment_saga.py)
+- Location: [app/workers/temporal/workflows/service_publish.py](../../app/workers/temporal/workflows/service_publish.py)
 
 **Characteristics:**
 - **Deterministic:** Same input always produces same decisions (no random, no time calls)
@@ -112,7 +116,7 @@ History entries:
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│   app/workflows/appointment_saga.py                              │
+│   app/workers/temporal/workflows/appointment_saga.py              │
 │   class AppointmentSagaWorkflow:                                │
 │     @workflow.run                                               │
 │     async def execute(appointment_data: dict)                   │
@@ -338,7 +342,7 @@ workflow_result = await run_appointment_saga(workflow_payload)
 #   ...
 # }
 
-# run_appointment_saga() location: app/workflows/appointment_saga.py
+# run_appointment_saga() location: app/workers/temporal/workflows/appointment_saga.py
 async def run_appointment_saga(payload: dict) -> dict[str, object]:
     workflow_id = f"appointment_saga_{payload['patient_id']}_{payload['slot_id']}_{uuid4()}"
     
@@ -553,10 +557,10 @@ docker logs temporal-worker
 
 | Concept | Purpose | Location |
 |---------|---------|----------|
-| **Workflow** | Orchestration logic | app/workflows/{appointment_saga,service_publish}.py |
+| **Workflow** | Orchestration logic | app/workers/temporal/workflows/{appointment_saga,service_publish}.py |
 | **Activity** | Real work | app/temporal/activities.py |
 | **Worker** | Executor | app/workers/service_publish_worker.py |
-| **Retry Policy** | Automatic retries | app/workflows/temporal_policies.py |
+| **Retry Policy** | Automatic retries | app/workers/temporal/policies.py |
 | **Server** | Stores history | temporal:7233 (Docker) |
 | **UI** | Visibility | localhost:8080 |
 

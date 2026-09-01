@@ -8,12 +8,12 @@ from app.repositories.generated_content import GeneratedContentRepository
 from app.repositories.departments import DepartmentRepository
 from app.repositories.failed_jobs import FailedJobRepository
 from app.repositories.health import HealthRepository
-from app.repositories.notifications import NotificationRepository
+from app.repositories.notifications import NotificationRepository, NotificationDeliveryRepository
 from app.repositories.outbox import OutboxRepository
 from app.repositories.patients import PatientRepository
 from app.repositories.providers import ProviderRepository
 from app.repositories.services import ServiceRepository
-from app.repositories.slots import SlotRepository
+from app.repositories.slots import SlotRepository, SchedulingRepository
 from app.repositories.waitlist import WaitlistRepository
 
 __all__ = [
@@ -34,4 +34,7 @@ __all__ = [
     "ServiceRepository",
     "SlotRepository",
     "WaitlistRepository",
+    "SchedulingRepository",
+    "WorkerBillingRepository",
+    "NotificationDeliveryRepository",
 ]

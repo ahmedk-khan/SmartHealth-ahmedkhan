@@ -126,6 +126,22 @@ python -m app.workers.service_publish_worker
 
 ## API overview
 
+### Healthcare Assistant (AI)
+
+The assistant provides intelligent, safety-checked responses to patient and staff queries. All responses undergo medical advice refusal checks and PHI (Protected Health Information) scoping.
+
+- `POST /assistant/ask`
+  - streams answers to healthcare questions
+  - safety-checks prevent medical diagnosis and treatment advice
+  - responses are logged with refusal status and latency metrics
+
+- `POST /assistant/report`
+  - generates operational utilisation reports
+  - requires analytics read permission
+  - returns structured report JSON
+
+**Note:** The assistant requires a configured LLM provider. Set `LLM_API_KEY` and `LLM_BASE_URL` for production. Local development can run with a deterministic fake LLM (see Testing section).
+
 ### Authentication
 
 - `POST /auth/register`
@@ -251,10 +267,68 @@ Sample accounts include:
 
 ## Testing
 
-Run the test suite with:
+Run the test suite with no external dependencies:
 
 ```bash
 pytest -q
+```
+
+### Test coverage
+
+The test suite includes:
+
+- **Unit tests** (tests/unit/):
+  - Safety checks and input validation
+  - AI assistant safety and refusal logic (tests/unit/test_assistant_safety.py)
+  - Comprehensive AI layer tests with FakeLLM (tests/unit/test_ai_layer_comprehensive.py)
+  - Authorization and content validation
+  - Error handling and edge cases
+
+- **Integration tests** (tests/integration/):
+  - Full API workflows
+  - Kafka event integration
+  - Docker infrastructure validation
+  - Assistant API end-to-end flows
+
+- **Demo tasks** (tests/demo_tasks/):
+  - Temporal workflow demonstrations
+  - Race condition and concurrency tests
+
+### FakeLLM for offline testing
+
+Tests use a deterministic FakeLLM implementation that requires no network access or API keys. The FakeLLM handles:
+
+- Medical advice refusal (diagnosis, medication, treatment questions)
+- Appointment status queries
+- Service preparation information
+- Availability checking
+- General service navigation
+
+This ensures the full test suite passes in isolated environments without external dependencies.
+
+### Running specific test suites
+
+```bash
+# Unit tests only
+pytest tests/unit/ -q
+
+# Integration tests (requires Docker infra running)
+pytest tests/integration/ -q
+
+# AI assistant tests
+pytest tests/unit/test_ai_layer_comprehensive.py -v
+
+# Safety and refusal tests
+pytest tests/unit/test_assistant_safety.py -v
+```
+
+### Baseline test status
+
+The project maintains a baseline of known test results in `test_baseline.txt`. Run the full suite and compare:
+
+```bash
+pytest --tb=short > current_results.txt
+diff test_baseline.txt current_results.txt
 ```
 
 Common development commands are also available through the `Makefile`:

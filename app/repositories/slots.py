@@ -1,5 +1,8 @@
 import datetime
 
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models import Patient, Provider, Service, Slot, SlotStatus
 from app.repositories.base import BaseRepository
 
@@ -94,3 +97,35 @@ class SlotRepository(BaseRepository):
 
     def get_patient_by_user_id(self, user_id: int) -> Patient | None:
         return self.db.query(Patient).filter(Patient.user_id == user_id).first()
+
+
+class SchedulingRepository:
+    """Async repository for workflow-specific slot scheduling operations (consolidated from scheduling_repo.py)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_slot(self, slot_id: int) -> Slot | None:
+        return await self.session.scalar(select(Slot).where(Slot.id == slot_id))
+
+    async def reserve_slot(self, slot_id: int, user_id: int) -> Slot | None:
+        result = await self.session.execute(
+            update(Slot).where(Slot.id == slot_id, Slot.status == SlotStatus.AVAILABLE)
+            .values(status=SlotStatus.RESERVED, patient_id=user_id)
+        )
+        if result.rowcount != 1:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return await self.get_slot(slot_id)
+
+    async def release_slot(self, slot_id: int) -> Slot | None:
+        result = await self.session.execute(
+            update(Slot).where(Slot.id == slot_id, Slot.status == SlotStatus.RESERVED)
+            .values(status=SlotStatus.AVAILABLE, patient_id=None)
+        )
+        if result.rowcount != 1:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return await self.get_slot(slot_id)

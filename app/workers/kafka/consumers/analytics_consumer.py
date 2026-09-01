@@ -50,12 +50,14 @@ class AnalyticsConsumer:
 
     def _is_safe_payload(self, payload: dict[str, Any]) -> bool:
         forbidden = {"name", "email", "phone", "dob", "address", "diagnosis", "notes", "symptoms", "medical_history"}
+
         def contains_forbidden(value: Any) -> bool:
             if isinstance(value, dict):
                 return any(str(key).lower() in forbidden or contains_forbidden(item) for key, item in value.items())
             if isinstance(value, list):
                 return any(contains_forbidden(item) for item in value)
             return False
+
         return not contains_forbidden(payload)
 
     def _update_appointment_metrics(self, db: Session, payload: dict[str, Any]) -> None:
@@ -122,3 +124,6 @@ class AnalyticsConsumer:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     AnalyticsConsumer().run()
+
+
+__all__ = ["AnalyticsConsumer", "ConsumerConfigError"]

@@ -26,6 +26,7 @@ from app.core.http_metrics_middleware import HTTPMetricsMiddleware
 from app.core.logging import configure_logging
 from app.core.middleware import CorrelationIdMiddleware
 from app.core.rate_limit import limiter
+from app.core.ai_controls import ai_redis_store
 from app.core.security_headers import SecurityHeadersMiddleware
 
 try:
@@ -74,6 +75,7 @@ def create_app() -> FastAPI:
             app.state.kafka_producer = kafka_producer
             yield
         finally:
+            await ai_redis_store.close()
             if kafka_producer is not None:
                 kafka_producer.close(timeout=3)
             if redis_client is not None:

@@ -69,16 +69,6 @@ async def validate_appointment_data(appointment_data: dict[str, Any]) -> dict[st
 
 
 @activity.defn
-async def wait_for_worker_interruption(appointment_data: dict[str, Any]) -> dict[str, Any]:
-    """Keep the demo booking pending until this worker is interrupted."""
-    if activity.info().attempt > 1:
-        return {"worker_restarted": True}
-    while True:
-        activity.heartbeat(appointment_data.get("slot_id"))
-        await asyncio.sleep(1)
-
-
-@activity.defn
 async def reserve_slot(appointment_data: dict[str, Any]) -> dict[str, Any]:
     """
     Reserve a slot for the appointment.

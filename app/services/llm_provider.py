@@ -1,3 +1,5 @@
+import asyncio
+import json
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
@@ -11,6 +13,10 @@ from app.core.settings import settings
 class LLMProvider(ABC):
     @abstractmethod
     async def stream(self, prompt: str) -> AsyncIterator[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def complete(self, prompt: str) -> str:
         raise NotImplementedError
 
     @abstractmethod
@@ -29,6 +35,9 @@ class FakeLLM(LLMProvider):
         for token in answer.split():
             yield f"{token} "
 
+    async def complete(self, prompt: str) -> str:
+        return self.answer or "Appointment confirmed. Please bring your ID and arrive 10 minutes early."
+
     async def complete_json(self, prompt: str) -> str:
         return (
             '{"period_start":"1970-01-01","period_end":"1970-01-01",'
@@ -44,36 +53,94 @@ class OpenAICompatibleLLM(LLMProvider):
         self.model = model
 
     async def _complete(self, prompt: str, stream: bool = False) -> Any:
-        try:
-            async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={"model": self.model, "messages": [{"role": "user", "content": prompt}], "stream": stream},
-                )
-                response.raise_for_status()
-                return response
-        except httpx.HTTPError as exc:
-            raise ExternalServiceError("LLM provider is temporarily unavailable", status_code=502, code="LLM_UNAVAILABLE") from exc
+        max_retries = 2
+        timeout = httpx.Timeout(connect=3.0, read=settings.llm_timeout_seconds, write=3.0, pool=3.0)
+
+        for attempt in range(1, max_retries + 2):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json={"model": self.model, "messages": [{"role": "user", "content": prompt}], "stream": stream},
+                    )
+                    if response.status_code >= 500 and attempt <= max_retries:
+                        await asyncio.sleep(0.5 * attempt)
+                        continue
+                    response.raise_for_status()
+                    return response
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, httpx.HTTPError) as exc:
+                if attempt <= max_retries:
+                    await asyncio.sleep(0.5 * attempt)
+                    continue
+                raise ExternalServiceError(
+                    "LLM provider is temporarily unavailable; please try again later.",
+                    status_code=502,
+                    code="LLM_UNAVAILABLE",
+                ) from exc
+
+        raise ExternalServiceError(
+            "LLM provider is temporarily unavailable; please try again later.",
+            status_code=502,
+            code="LLM_UNAVAILABLE",
+        )
 
     async def stream(self, prompt: str) -> AsyncIterator[str]:
-        response = await self._complete(prompt, stream=False)
-        try:
-            content = response.json()["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise ExternalServiceError("LLM provider returned an invalid response", status_code=502, code="LLM_INVALID_RESPONSE") from exc
-        for token in content.split():
-            yield f"{token} "
+        timeout = httpx.Timeout(connect=3.0, read=settings.llm_timeout_seconds, write=3.0, pool=3.0)
+        for attempt in range(1, 4):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{self.base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json={"model": self.model, "messages": [{"role": "user", "content": prompt}], "stream": True},
+                    ) as response:
+                        response.raise_for_status()
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            payload = line[5:].strip()
+                            if payload == "[DONE]":
+                                return
+                            try:
+                                content = json.loads(payload)["choices"][0]["delta"].get("content", "")
+                            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                                raise ExternalServiceError("LLM provider returned an invalid streaming response", status_code=502, code="LLM_INVALID_RESPONSE") from exc
+                            if content:
+                                yield content
+                return
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, httpx.HTTPError) as exc:
+                if attempt < 3:
+                    await asyncio.sleep(0.5 * attempt)
+                    continue
+                raise ExternalServiceError(
+                    "LLM provider is temporarily unavailable; please try again later.",
+                    status_code=502,
+                    code="LLM_UNAVAILABLE",
+                ) from exc
 
-    async def complete_json(self, prompt: str) -> str:
+    async def complete(self, prompt: str) -> str:
         response = await self._complete(prompt, stream=False)
         try:
             return response.json()["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise ExternalServiceError("LLM provider returned an invalid response", status_code=502, code="LLM_INVALID_RESPONSE") from exc
 
+    async def complete_json(self, prompt: str) -> str:
+        return await self.complete(prompt)
+
 
 def get_llm_provider() -> LLMProvider:
     if not settings.llm_api_key:
-        return FakeLLM()
-    return OpenAICompatibleLLM(settings.llm_base_url, settings.llm_api_key, settings.llm_model)
+        if settings.use_fake_llm:
+            return FakeLLM()
+        raise ExternalServiceError(
+            "LLM provider is not configured; set LLM_API_KEY or explicitly enable USE_FAKE_LLM for development/tests.",
+            status_code=503,
+            code="LLM_NOT_CONFIGURED",
+        )
+    base_url = settings.llm_base_url
+    if settings.llm_provider.lower() == "groq" and base_url == "https://api.openai.com/v1":
+        base_url = "https://api.groq.com/openai/v1"
+    return OpenAICompatibleLLM(base_url, settings.llm_api_key, settings.llm_model)

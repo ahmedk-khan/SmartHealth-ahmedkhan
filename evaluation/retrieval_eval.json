@@ -1,12 +1,152 @@
-[
-  {"query": "routine general health consultation", "expected_service": "General Consultation"},
-  {"query": "primary care checkup", "expected_service": "General Consultation"},
-  {"query": "review current medications with a clinician", "expected_service": "General Consultation"},
-  {"query": "medical history consultation", "expected_service": "General Consultation"},
-  {"query": "routine patient check", "expected_service": "General Consultation"},
-  {"query": "primary care appointment preparation", "expected_service": "General Consultation"},
-  {"query": "general practitioner consultation", "expected_service": "General Consultation"},
-  {"query": "health screening and checkup", "expected_service": "General Consultation"},
-  {"query": "bring medication list to appointment", "expected_service": "General Consultation"},
-  {"query": "basic outpatient consultation", "expected_service": "General Consultation"}
-]
+{
+  "description": "Retrieval Evaluation Set for Semantic Search",
+  "metadata": {
+    "version": "2.0",
+    "total_queries": 20,
+    "purpose": "Evaluate retrieval accuracy: how often expected service appears in top-k results",
+    "scoring_rule": "Expected service appears in top-5 results (k=5) = success; else = failure",
+    "date_created": "2026-09-01"
+  },
+  "evaluation_queries": [
+    {
+      "id": 1,
+      "query": "routine general health consultation",
+      "expected_service": "General Consultation",
+      "difficulty": "direct",
+      "category": "Primary Care"
+    },
+    {
+      "id": 2,
+      "query": "primary care checkup",
+      "expected_service": "General Consultation",
+      "difficulty": "direct",
+      "category": "Primary Care"
+    },
+    {
+      "id": 3,
+      "query": "review current medications with a clinician",
+      "expected_service": "General Consultation",
+      "difficulty": "moderate",
+      "category": "Primary Care"
+    },
+    {
+      "id": 4,
+      "query": "medical history consultation",
+      "expected_service": "General Consultation",
+      "difficulty": "moderate",
+      "category": "Primary Care"
+    },
+    {
+      "id": 5,
+      "query": "I need help with my diabetes management and blood sugar monitoring",
+      "expected_service": "Endocrinology",
+      "difficulty": "direct",
+      "category": "Specialty"
+    },
+    {
+      "id": 6,
+      "query": "I'm experiencing chest pain and shortness of breath",
+      "expected_service": "Cardiology",
+      "difficulty": "direct",
+      "category": "Specialty"
+    },
+    {
+      "id": 7,
+      "query": "My child has persistent cough and fever",
+      "expected_service": "Pediatrics",
+      "difficulty": "moderate",
+      "category": "Specialty"
+    },
+    {
+      "id": 8,
+      "query": "I need joint replacement surgery and pain management",
+      "expected_service": "Orthopedic Surgery",
+      "difficulty": "direct",
+      "category": "Surgery"
+    },
+    {
+      "id": 9,
+      "query": "I'm having trouble sleeping and feeling anxious",
+      "expected_service": "Psychiatry",
+      "difficulty": "direct",
+      "category": "Mental Health"
+    },
+    {
+      "id": 10,
+      "query": "I need an eye exam and new glasses prescription",
+      "expected_service": "Ophthalmology",
+      "difficulty": "direct",
+      "category": "Specialty"
+    },
+    {
+      "id": 11,
+      "query": "severe migraines and headaches multiple times a week",
+      "expected_service": "Neurology",
+      "difficulty": "moderate",
+      "category": "Specialty"
+    },
+    {
+      "id": 12,
+      "query": "skin rashes and acne treatment",
+      "expected_service": "Dermatology",
+      "difficulty": "direct",
+      "category": "Specialty"
+    },
+    {
+      "id": 13,
+      "query": "stomach pain and acid reflux treatment",
+      "expected_service": "Gastroenterology",
+      "difficulty": "direct",
+      "category": "Specialty"
+    },
+    {
+      "id": 14,
+      "query": "health screening and checkup",
+      "expected_service": "General Consultation",
+      "difficulty": "direct",
+      "category": "Primary Care"
+    },
+    {
+      "id": 15,
+      "query": "lower back pain and physical therapy",
+      "expected_service": "Orthopedic Surgery",
+      "difficulty": "moderate",
+      "category": "Surgery"
+    },
+    {
+      "id": 16,
+      "query": "high blood pressure and cholesterol management",
+      "expected_service": "Cardiology",
+      "difficulty": "moderate",
+      "category": "Specialty"
+    },
+    {
+      "id": 17,
+      "query": "prenatal care and ultrasound",
+      "expected_service": "Obstetrics and Gynecology",
+      "difficulty": "direct",
+      "category": "Women's Health"
+    },
+    {
+      "id": 18,
+      "query": "dental checkup and cleaning",
+      "expected_service": "Dentistry",
+      "difficulty": "direct",
+      "category": "Dental"
+    },
+    {
+      "id": 19,
+      "query": "muscle weakness and numbness in limbs",
+      "expected_service": "Neurology",
+      "difficulty": "moderate",
+      "category": "Specialty"
+    },
+    {
+      "id": 20,
+      "query": "bring medication list to appointment",
+      "expected_service": "General Consultation",
+      "difficulty": "moderate",
+      "category": "Primary Care"
+    }
+  ]
+}

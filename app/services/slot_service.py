@@ -1,7 +1,7 @@
 from app.core.authorization import authorize, Permission
-from app.core.exceptions import not_found_error
+from app.core.exceptions import not_found_error, ConflictError
 from app.models import SlotStatus, User, UserRole
-from app.repositories import ProviderRepository, SlotRepository
+from app.repositories import ProviderRepository, SlotRepository, SchedulingRepository
 from app.services.base import BaseService
 
 
@@ -99,3 +99,27 @@ class SlotService(BaseService):
             data={"service_id": service_id, "total": total},
         )
         return items, total
+
+    # Async methods for Temporal activities (consolidated from workers/temporal/services/scheduling_service.py)
+    async def validate_slot_async(self, scheduling_repo: SchedulingRepository, slot_id: int) -> dict[str, int | str]:
+        """Validate a slot is available (async for workflow activities)."""
+        slot = await scheduling_repo.get_slot(slot_id)
+        if slot is None:
+            raise not_found_error("Slot not found")
+        if slot.status != SlotStatus.AVAILABLE:
+            raise ConflictError("Slot is no longer available", code="SLOT_NOT_AVAILABLE")
+        return {"slot_id": slot.id, "status": slot.status.value}
+
+    async def reserve_slot_async(self, scheduling_repo: SchedulingRepository, slot_id: int, user_id: int) -> dict[str, int | str]:
+        """Reserve a slot (async for workflow activities)."""
+        reserved = await scheduling_repo.reserve_slot(slot_id, user_id)
+        if reserved is None:
+            raise ConflictError("Slot is no longer available", code="SLOT_NOT_AVAILABLE")
+        return {"slot_id": slot_id, "user_id": user_id, "status": reserved.status.value}
+
+    async def release_slot_async(self, scheduling_repo: SchedulingRepository, slot_id: int) -> dict[str, int | str]:
+        """Release a reserved slot (async for workflow activities)."""
+        released = await scheduling_repo.release_slot(slot_id)
+        if released is None:
+            raise not_found_error("Reserved slot not found")
+        return {"slot_id": slot_id, "user_id": released.patient_id or 0, "status": released.status.value}

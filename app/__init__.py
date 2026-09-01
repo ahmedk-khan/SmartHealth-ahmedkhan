@@ -1,2 +1,0 @@
-"""SmartHealth application package."""
-

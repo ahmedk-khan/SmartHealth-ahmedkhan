@@ -1,46 +1,31 @@
-"""
-Utilities for structured logging in Temporal workflows and activities.
+"""Temporal activity logging utilities with correlation context.
 
-Ensures correlation IDs and request IDs are propagated through Temporal's
-execution context and included in all log output.
+These functions set up and maintain correlation context (correlation_id, request_id)
+across activity invocations, enabling end-to-end tracing through workflows.
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
+from app.core.exceptions import AppError
 from app.core.logging import set_correlation_id, set_request_id, get_correlation_id, get_request_id
-
 
 logger = logging.getLogger(__name__)
 
 
-def extract_correlation_context(activity_input: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
-    """
-    Extract correlation ID and request ID from activity input.
+def setup_activity_context(activity_data: dict[str, Any], activity_name: str) -> None:
+    """Set up correlation context for a Temporal activity.
+    
+    Extracts correlation_id and request_id from activity_data and sets them as
+    context variables so all logging within the activity includes these IDs.
     
     Args:
-        activity_input: Dictionary containing activity parameters
-        
-    Returns:
-        Tuple of (correlation_id, request_id)
+        activity_data: Dictionary containing activity input, may include
+            correlation_id and request_id from the workflow
+        activity_name: Name of the activity for logging purposes
     """
-    correlation_id = activity_input.get("correlation_id")
-    request_id = activity_input.get("request_id")
-    return correlation_id, request_id
-
-
-def setup_activity_context(activity_input: dict[str, Any], activity_name: str) -> None:
-    """
-    Set up correlation context for an activity.
-    
-    This should be called at the start of each activity to ensure
-    correlation IDs are available in logging context.
-    
-    Args:
-        activity_input: Dictionary containing activity parameters
-        activity_name: Name of the activity for logging
-    """
-    correlation_id, request_id = extract_correlation_context(activity_input)
+    correlation_id = activity_data.get("correlation_id")
+    request_id = activity_data.get("request_id")
     
     if correlation_id:
         set_correlation_id(correlation_id)
@@ -48,51 +33,56 @@ def setup_activity_context(activity_input: dict[str, Any], activity_name: str) -
         set_request_id(request_id)
     
     logger.info(
-        f"Activity '{activity_name}' started",
+        f"Activity started: {activity_name}",
         extra={
             "activity_name": activity_name,
-            "correlation_id": correlation_id,
-            "request_id": request_id,
+            "correlation_id": get_correlation_id(),
+            "request_id": get_request_id(),
         }
     )
 
 
-def log_activity_step(step_name: str, data: Optional[dict[str, Any]] = None) -> None:
-    """
-    Log a step within an activity with correlation context.
+def log_activity_step(message: str, data: dict[str, Any] | None = None) -> None:
+    """Log a step within a Temporal activity.
+    
+    Logs structured information about activity progress, automatically including
+    correlation context for tracing.
     
     Args:
-        step_name: Name of the step being executed
-        data: Optional data to include in the log
+        message: Description of the activity step
+        data: Optional dictionary of structured data to include in the log
     """
-    logger.info(
-        f"Activity step: {step_name}",
-        extra={
-            "activity_step": step_name,
-            **(data or {})
-        }
-    )
+    log_data = data or {}
+    log_data.update({
+        "correlation_id": get_correlation_id(),
+        "request_id": get_request_id(),
+    })
+    
+    logger.info(message, extra=log_data)
 
 
-def log_activity_error(
-    activity_name: str,
-    error: Exception,
-    context: Optional[dict[str, Any]] = None
-) -> None:
-    """
-    Log an activity error with correlation context.
+def log_activity_error(activity_name: str, error: Exception) -> None:
+    """Log an error within a Temporal activity.
+    
+    Logs error details with correlation context for debugging and audit purposes.
     
     Args:
-        activity_name: Name of the activity
+        activity_name: Name of the activity that failed
         error: The exception that occurred
-        context: Optional additional context
     """
+    error_details = {
+        "activity_name": activity_name,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "correlation_id": get_correlation_id(),
+        "request_id": get_request_id(),
+    }
+    
+    if isinstance(error, AppError):
+        error_details["error_code"] = error.code
+    
     logger.error(
-        f"Activity '{activity_name}' failed",
-        extra={
-            "activity_name": activity_name,
-            "error": str(error),
-            **(context or {})
-        },
+        f"Activity error in {activity_name}: {str(error)}",
+        extra=error_details,
         exc_info=True
     )

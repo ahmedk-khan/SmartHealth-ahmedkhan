@@ -162,6 +162,56 @@ celery_task_duration_seconds = Histogram(
 )
 
 # ============================================================================
+# AI Metrics
+# ============================================================================
+
+ai_requests_total = Counter("ai_requests_total", "AI interactions by intent and outcome", ["intent", "outcome"])
+ai_refusals_total = Counter("ai_refusals_total", "AI safety refusals", ["intent"])
+ai_cache_hits_total = Counter("ai_cache_hits_total", "AI answer cache hits")
+ai_request_duration_seconds = Histogram("ai_request_duration_seconds", "AI interaction latency", ["intent"])
+ai_input_tokens_total = Counter("ai_input_tokens_total", "Estimated AI input tokens", ["intent"])
+ai_output_tokens_total = Counter("ai_output_tokens_total", "Estimated AI output tokens", ["intent"])
+ai_booking_conversions = Gauge("ai_booking_conversions", "Bookings associated with AI appointment navigation")
+ai_booking_conversion_rate = Gauge("ai_booking_conversion_rate", "Appointment conversion rate from AI appointment navigation")
+
+
+def record_ai_interaction(intent: str, outcome: str, latency_seconds: float, input_tokens: int, output_tokens: int, refused: bool) -> None:
+    try:
+        ai_requests_total.labels(intent=intent, outcome=outcome).inc()
+        ai_request_duration_seconds.labels(intent=intent).observe(latency_seconds)
+        ai_input_tokens_total.labels(intent=intent).inc(input_tokens)
+        ai_output_tokens_total.labels(intent=intent).inc(output_tokens)
+        if refused:
+            ai_refusals_total.labels(intent=intent).inc()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record AI metrics", exc_info=True)
+
+
+def record_ai_cache_hit() -> None:
+    try:
+        ai_cache_hits_total.inc()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record AI cache metric", exc_info=True)
+
+
+def set_ai_booking_conversions(value: int) -> None:
+    try:
+        ai_booking_conversions.set(value)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record AI booking conversion count", exc_info=True)
+
+
+def set_ai_booking_conversion_rate(value: float) -> None:
+    try:
+        ai_booking_conversion_rate.set(value)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record AI booking conversion rate", exc_info=True)
+
+# ============================================================================
 # Utility Functions
 # ============================================================================
 

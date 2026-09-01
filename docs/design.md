@@ -68,6 +68,12 @@ Redis idempotency is keyed by authenticated user and `Idempotency-Key`. The appo
 
 - PostgreSQL is the production database because conditional updates, unique constraints, and pgvector are first-class requirements. SQLite remains useful for fast tests and migration checks.
 - Kafka events are published after successful commits. This prevents a broker outage from rolling back committed business data, but can create delivery lag; an outbox is the next production hardening step.
-- Temporal owns durable orchestration and retries. Database work remains in activities so replay remains deterministic.
+- Temporal owns durable orchestration and retries. Workflows remain deterministic; activities adapt to services, services own business rules, and repositories own database access.
 - Repository-level writes centralize consistency and audit behavior at the cost of more explicit application code.
 - The local fallback supports development without Temporal; Compose starts the real Temporal worker.
+
+## Temporal Layering
+
+The Temporal worker structure lives under `app/workers/temporal/`.
+Workflows contain deterministic orchestration, activities are thin adapters,
+services contain business logic, and repositories contain SQLAlchemy data access.

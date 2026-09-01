@@ -5,7 +5,6 @@ from app.core.dependencies import get_db
 from app.core.authorization import require_permission, authorize, Permission
 from app.core.exceptions import (
     NotFoundError,
-    PatientNotFoundError,
     SlotNotFoundError,
     ConflictError,
     ValidationError,
@@ -49,28 +48,6 @@ def create_slot(
         service_id=slot.service_id,
         status=slot.status.value,
     )
-    return slot
-
-
-@router.post(
-    "/{slot_id}/reserve",
-    response_model=SlotRead,
-    status_code=status.HTTP_200_OK,
-    summary="Reserve a slot",
-    description="Reserves a currently available slot for the authenticated patient.",
-)
-def reserve_slot(
-    slot_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission(Permission.SLOT_RESERVE)),
-):
-    repository = SlotRepository(db)
-    patient = repository.get_patient_by_user_id(current_user.id)
-    if not patient:
-        raise PatientNotFoundError("Patient profile not found")
-    slot = repository.reserve_for_patient(slot_id, patient.id)
-    if not slot:
-        raise ConflictError("Slot is no longer available", code="SLOT_NOT_AVAILABLE")
     return slot
 
 

@@ -45,23 +45,38 @@ The system is scoped to one clinic and demonstrates authorization, transactional
 | Week 2 | Published service chunks, semantic search, Temporal publishing workflow |
 | Week 3 | Scheduling saga, atomic reservation, billing compensation, visits, Kafka/Celery analytics, observability |
 
-## 6. Traceability
+## 6. Traceability Matrix
 
-| Requirement | Implementation | Verification |
-| --- | --- | --- |
-| Registration/login and hashes | `app/api/v1/endpoints/auth.py`, `app/core/security.py` | auth tests in `tests/integration/test_api.py` |
-| Role and PHI authorization | `app/core/dependencies.py`, endpoint guards | protected endpoint tests |
-| Provider/service/slot management | repositories and endpoints | API integration tests |
-| Searchable published chunks | `app/workflows/service_publish.py`, `ContentChunkRepository` | chunk and publish tests |
-| Durable service workflow | `ServicePublishWorkflow`, `app/temporal/worker.py` | Compose worker and publish path |
-| Atomic booking | `SlotRepository.reserve_for_patient` | reservation tests; PostgreSQL concurrency demo |
-| Booking idempotency | `app/core/idempotency.py` | idempotency test |
-| Billing compensation | `BillingChecker`, saga compensation activities | forced-failure scenario |
-| Cancellation and waitlist | `AppointmentRepository.cancel`, waitlist model | cancellation scenario |
-| Visit lifecycle | appointment endpoint and repository transitions | visit lifecycle tests |
-| Events and analytics | Kafka publisher and analytics consumer | replay/idempotency test |
-| Celery failure handling | task retry policies and `FailedJobService` | task tests and runbook |
-| Auditability | `AuditLog`, repository audit helper, status history | migration and mutation checks |
+| Feature | Requirement | Implementation | Verification |
+| --- | --- | --- | --- |
+| **Authentication** | Registration/login with bcrypt hashes and JWT tokens | `app/api/v1/endpoints/auth.py`, `app/core/security.py` | `tests/integration/test_api.py::test_*_auth*` |
+| **Authorization** | Role-based access control (patient, provider, admin) | `app/core/authorization/`, endpoint decorators | Protected endpoint tests verify role enforcement |
+| **PHI Protection** | Patient data authorization at repository level | `app/core/authorization/service.py`, query filtering | Authorization tests; endpoint integration tests |
+| **Departments** | Create, list, and reference departments | `app/repositories/departments.py`, endpoints | CRUD and query tests |
+| **Providers** | Manage provider profiles and specialties | `app/repositories/providers.py` | Provider lifecycle tests |
+| **Services** | Publish/unpublish service offerings | `app/services/` and endpoints | Service publication workflow tests |
+| **Service Chunks** | Embed content into searchable chunks | `app/workers/temporal/workflows/service_publish.py` | Chunk generation and embedding tests |
+| **Semantic Search** | Vector search over service content | `ContentChunkRepository`, search endpoint | Retrieval evaluation in `scripts/eval_retrieval.py` |
+| **Slots** | Create and manage available appointment slots | `app/repositories/slots.py` | Slot reservation and availability tests |
+| **Atomic Booking** | No double-booking under concurrent load | `SlotRepository.reserve_for_patient` with DB constraint | Race condition demo in `tests/demo_tasks/race_demo.py` |
+| **Booking Idempotency** | Retry safety via idempotency keys | `app/core/idempotency.py`, `RedisIdempotencyStore` | `test_appointment_idempotency` integration test |
+| **Booking Saga** | Multi-step appointment workflow | `AppointmentSagaWorkflow`, Temporal activities | Temporal workflow tests |
+| **Billing Safety** | Pre-check and compensation on failure | `BillingChecker`, compensation activities | Forced-failure integration scenario |
+| **Visit Lifecycle** | Check-in, start, complete state transitions | Appointment endpoints and state machine | Visit state transition tests |
+| **Analytics Events** | Publish events to Kafka; consume idempotently | `KafkaEventPublisher`, `AnalyticsConsumer` | Kafka event integration tests |
+| **Celery Retries** | Bounded retry + failed job logging | Celery config, `FailedJobService` | Task execution tests |
+| **Audit Logs** | Track all business mutations | `AuditLog` model + repository audit methods | Audit log presence tests |
+| **Observability** | Correlation IDs, structured logs, metrics | `CorrelationIdMiddleware`, `HTTPMetricsMiddleware`, `AIInteraction` logging | Log structure validation; metrics endpoint tests |
+| **AI Assistant - Safety** | Refuse medical advice, emergency escalation | `SafetyService`, `decision.refused`, `decision.acute` | `test_assistant_refuses_*` in `test_ai_layer_comprehensive.py` |
+| **AI Assistant - PHI** | Hash questions, redact responses, filter retrieval | Question hashing, response redaction in `AssistantService` | `test_ai_assistant_phi_*` tests |
+| **AI Assistant - Intent** | Route to appointment, preparation, availability, navigation | Intent classification in `SafetyService` | Intent routing tests |
+| **AI Assistant - Streaming** | SSE with text tokens, citations, done event | `AssistantService.stream_answer` async generator | `test_streaming_*` format and shape tests |
+| **AI Assistant - Caching** | Cache navigation answers in Redis | `AIRedisStore.cache_answer/get_cached_answer` | Caching behavior tests |
+| **AI Assistant - Timeout** | Timeout protection for LLM calls | `asyncio.timeout(LLM_TIMEOUT_SECONDS)` | Timeout error handling tests |
+| **AI Assistant - Testing** | No-network test suite with FakeLLM | `tests/conftest_llm.py`, `FakeLLM` class | Full `test_ai_layer_comprehensive.py` suite |
+| **Health & Readiness** | Service liveness and dependency checks | `GET /health`, `GET /health/ready` endpoints | Health endpoint tests |
+| **Metrics** | Prometheus metrics for observability | `GET /metrics`, prometheus-client integration | Metrics endpoint query tests |
+| **Docker Setup** | One-command demo environment | `docker-compose.yml` | `docker compose up --build` verification |
 
 ## 7. Out of scope
 

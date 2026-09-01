@@ -41,3 +41,23 @@ class NotificationRepository(BaseRepository):
     def mark_sent(self, notification: Notification) -> None:
         notification.status = NotificationStatus.SENT
         self.commit()
+
+    # Async notification delivery methods (consolidated from notification_repo.py)
+    async def send_confirmation(self, user_id: int, appointment_id: int) -> dict[str, str | int]:
+        """Send confirmation notification (delivery boundary)."""
+        # TODO: persist an outbox row when confirmation delivery is wired.
+        return {"user_id": user_id, "appointment_id": appointment_id, "status": "QUEUED"}
+
+
+class NotificationDeliveryRepository:
+    """Deprecated: Use NotificationRepository.send_confirmation() instead."""
+    
+    def __init__(self, session) -> None:
+        from sqlalchemy.ext.asyncio import AsyncSession
+        self.session: AsyncSession = session
+
+    async def send_confirmation(self, user_id: int, appointment_id: int) -> dict[str, str | int]:
+        """Deprecated: Use NotificationRepository.send_confirmation() instead."""
+        # TODO: persist an outbox row when confirmation delivery is wired.
+        return {"user_id": user_id, "appointment_id": appointment_id, "status": "QUEUED"}
+

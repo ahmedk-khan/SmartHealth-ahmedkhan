@@ -172,7 +172,7 @@ def test_assistant_refuses_diagnosis_and_persists_refusal(client):
         assert len(rows) == 1
         interaction = rows[0]
         assert interaction.refused is True
-        assert interaction.question == "Diagnose me: I have knee pain. What caused it and what medication should I take?"
+        assert interaction.question.startswith("sha256:")
         assert interaction.retrieved_ids == []
         assert "medical advice" in interaction.answer.lower()
         assert interaction.latency_ms is not None
@@ -331,7 +331,7 @@ def test_utilisation_report_streams_and_uses_analytics(client):
 
     token = _login(client, "admin@example.com", "secret123")
     response = client.post(
-        "/assistant/report",
+        "/api/v1/reports/generate/utilisation",
         json={"period_start": "2026-08-01", "period_end": "2026-08-31"},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -419,7 +419,7 @@ def test_long_report_generation_does_not_block_booking(client, monkeypatch):
 
     def run_report():
         response = client.post(
-            "/assistant/report",
+            "/api/v1/reports/generate/utilisation",
             json={"period_start": "2026-08-01", "period_end": "2026-08-31"},
             headers={"Authorization": f"Bearer {token}"},
         )

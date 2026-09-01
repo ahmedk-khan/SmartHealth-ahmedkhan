@@ -3,12 +3,19 @@ import logging
 
 from app.core.settings import settings
 from app.core.logging import set_correlation_id, set_request_id, configure_logging
+from app.workers.celery.beat_schedule import BEAT_SCHEDULE
+from app.workers.celery.config import (
+    CELERY_BROKER_URL,
+    CELERY_RESULT_BACKEND,
+    CELERY_TASK_ALWAYS_EAGER,
+    CELERY_TIMEZONE,
+)
 
 
 celery_app = Celery(
     "smarthealth",
-    broker=settings.celery_broker_url,
-    backend=settings.celery_result_backend,
+    broker=CELERY_BROKER_URL,
+    backend=CELERY_RESULT_BACKEND,
 )
 
 celery_app.conf.update(
@@ -19,22 +26,14 @@ celery_app.conf.update(
         "app.workers.celery.appointments",
         "app.workers.celery.analytics",
         "app.workers.celery.outbox",
+        "app.workers.celery.reports",
     ),
-    timezone="UTC",
+    timezone=CELERY_TIMEZONE,
     enable_utc=True,
     broker_connection_retry_on_startup=True,
-    task_always_eager=settings.celery_task_always_eager,
+    task_always_eager=CELERY_TASK_ALWAYS_EAGER,
     task_eager_propagates=True,
-    beat_schedule={
-        "enqueue-due-appointment-reminders": {
-            "task": "app.workers.celery.appointments.enqueue_due_appointment_reminders",
-            "schedule": 900.0,
-        },
-        "publish-pending-events": {
-            "task": "app.workers.celery.outbox.publish_pending_events",
-            "schedule": 30.0,
-        },
-    },
+    beat_schedule=BEAT_SCHEDULE,
 )
 
 logger = logging.getLogger(__name__)

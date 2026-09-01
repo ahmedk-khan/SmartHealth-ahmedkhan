@@ -18,5 +18,14 @@ def test_safety_check_flags_medical_and_appointment_intents():
     safety = SafetyCheck()
 
     assert safety.classify("Diagnose me: I have knee pain").refused is True
+    heart_pain = safety.classify("My heart is feeling pain")
+    assert heart_pain.refused is True
+    assert heart_pain.acute is True
+    heart_burning = safety.classify("my heart is burining what should i do")
+    assert heart_burning.refused is True
+    assert heart_burning.acute is True
+    specialist = safety.classify("Which specialist should I see for knee pain?")
+    assert specialist.refused is False
+    assert specialist.intent == "specialist_navigation"
     assert safety.classify("What is my appointment status?").intent == "appointment"
     assert safety.classify("What preparation do I need for the MRI?").intent == "preparation"

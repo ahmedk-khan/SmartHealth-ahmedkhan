@@ -1,9 +1,10 @@
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 import time
 
 from sqlalchemy.exc import IntegrityError
-from app.core.exceptions import AppError, app_error, conflict_error, forbidden_error, not_found_error, ForbiddenError
-from app.core.authorization import authorize, Permission
+from app.core.exceptions import AppError, ConflictError, ForbiddenError, NotFoundError
+from app.core.authorization import Permission, AppointmentOwnershipGuard
+from app.core.authorization.service import check_permission
 from app.core.idempotency import idempotency_store
 from app.core.settings import settings
 from app.core.metrics import (
@@ -17,28 +18,25 @@ from app.repositories import AppointmentRepository, PatientRepository, ProviderR
 from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead
 from app.services.base import BaseService
 from app.services.healthcare_event_service import HealthcareEventService
-from app.workers.temporal.workflows.appointment_saga import run_appointment_saga, start_appointment_saga
+
+if TYPE_CHECKING:
+    from app.services.adapters import WorkflowOrchestratorAdapter
 
 
 class AppointmentService(BaseService):
     """Appointment management service with structured logging and event publishing."""
     
-    def __init__(self, db):
+    def __init__(self, db, orchestrator: "WorkflowOrchestratorAdapter | None" = None):
         super().__init__(db)
         self.appointments = AppointmentRepository(db)
         self.patients = PatientRepository(db)
         self.providers = ProviderRepository(db)
         self.slots = SlotRepository(db)
         self.events = HealthcareEventService(db)
+        self._orchestrator = orchestrator
 
     def _authorize(self, appointment, current_user: User) -> None:
-        authorize(
-            current_user,
-            Permission.APPOINTMENT_READ,
-            appointment,
-            patient_repository=self.patients,
-            provider_repository=self.providers,
-        )
+        AppointmentOwnershipGuard(current_user, appointment).enforce()
 
     def join_waitlist(self, slot_id: int, current_user: User) -> WaitlistEntry:
         """Join waitlist for a slot."""
@@ -47,10 +45,10 @@ class AppointmentService(BaseService):
         slot = self.slots.get_by_id(slot_id)
         if not patient or not slot:
             self.log_warning("Patient or slot not found for waitlist", operation="join_waitlist", data={"slot_id": slot_id})
-            raise not_found_error("Slot or patient not found")
+            raise NotFoundError("Slot or patient not found", code="WAITLIST_SLOT_NOT_FOUND")
         if slot.status == SlotStatus.AVAILABLE:
             self.log_warning("Cannot join waitlist: slot is available", operation="join_waitlist", data={"slot_id": slot_id})
-            raise conflict_error("Slot is still available")
+            raise ConflictError("Slot is still available", code="SLOT_STILL_AVAILABLE")
         return WaitlistRepository(self.db).join(slot_id, patient.id)
 
     async def create(
@@ -65,7 +63,7 @@ class AppointmentService(BaseService):
         booking_start_time = time.time()
         
         try:
-            authorize(current_user, Permission.APPOINTMENT_CREATE)
+            check_permission(current_user, Permission.APPOINTMENT_CREATE)
         except ForbiddenError as exc:
             self.log_warning("Appointment creation denied: invalid role", operation="create_appointment", data={"role": current_user.role})
             raise exc
@@ -84,15 +82,28 @@ class AppointmentService(BaseService):
         patient = self.patients.get_by_user_id(current_user.id)
         if not patient:
             self.log_error("Patient profile not found", operation="create_appointment", data={"user_id": current_user.id})
-            raise not_found_error("Patient profile not found")
+            raise NotFoundError("Patient profile not found", code="PATIENT_NOT_FOUND")
+
+        if idempotency_key:
+            existing = self.appointments.get_by_booking_key(idempotency_key)
+            if existing:
+                if existing.patient_id != patient.id:
+                    raise ConflictError("Idempotency key is already in use", code="IDEMPOTENCY_KEY_CONFLICT")
+                self.log_info(
+                    "Retrieved appointment by booking key",
+                    operation="create_appointment",
+                    data={"appointment_id": existing.id},
+                )
+                idempotency_store.set(current_user.id, idempotency_key, {"appointment_id": existing.id})
+                return existing
 
         slot = self.slots.get_by_id(payload.slot_id)
         if not slot:
             self.log_warning("Slot not found", operation="create_appointment", data={"slot_id": payload.slot_id})
-            raise not_found_error("Slot not found")
+            raise NotFoundError("Slot not found", code="SLOT_NOT_FOUND")
         if slot.status != SlotStatus.AVAILABLE:
             self.log_warning("Slot not available", operation="create_appointment", data={"slot_id": slot.id, "status": slot.status})
-            raise conflict_error("Slot is no longer available")
+            raise ConflictError("Slot is no longer available", code="SLOT_NOT_AVAILABLE")
 
         if idempotency_key and not idempotency_store.claim(current_user.id, idempotency_key):
             raise AppError("A booking with this idempotency key is in progress", status_code=409, error_type="idempotency_in_progress")
@@ -115,7 +126,13 @@ class AppointmentService(BaseService):
                     booking_key=idempotency_key,
                 )
                 workflow_payload["appointment_id"] = appointment.id
-                await start_appointment_saga(workflow_payload)
+                
+                # Use orchestrator if injected, otherwise lazy-load workflow
+                if self._orchestrator:
+                    await self._orchestrator.run_appointment_saga(workflow_payload)
+                else:
+                    from app.workers.temporal.workflows.appointment_saga import start_appointment_saga
+                    await start_appointment_saga(workflow_payload)
             except Exception as exc:
                 self.log_error("Failed to start appointment saga workflow", operation="create_appointment", exc_info=True)
                 self.appointments.rollback()
@@ -129,7 +146,12 @@ class AppointmentService(BaseService):
 
         self.log_info("Starting appointment saga workflow", operation="create_appointment", data={"patient_id": patient.id, "slot_id": slot.id})
         try:
-            workflow_result = await run_appointment_saga(workflow_payload)
+            # Use orchestrator if injected, otherwise lazy-load workflow
+            if self._orchestrator:
+                workflow_result = await self._orchestrator.run_appointment_saga(workflow_payload)
+            else:
+                from app.workers.temporal.workflows.appointment_saga import run_appointment_saga
+                workflow_result = await run_appointment_saga(workflow_payload)
         except AppError:
             self.log_error("Appointment saga failed: AppError", operation="create_appointment", exc_info=True)
             if idempotency_key:
@@ -144,7 +166,7 @@ class AppointmentService(BaseService):
         appointment = self.appointments.get_by_id(workflow_result["appointment_id"])
         if not appointment:
             self.log_error("Appointment not found after saga", operation="create_appointment", data={"workflow_result": workflow_result})
-            raise not_found_error("Appointment not found after saga execution")
+            raise NotFoundError("Appointment not found after saga execution", code="APPOINTMENT_NOT_FOUND")
 
         if idempotency_key:
             idempotency_store.set(current_user.id, idempotency_key, {"appointment_id": appointment.id})
@@ -159,7 +181,7 @@ class AppointmentService(BaseService):
         except Exception as exc:
             self.log_error("Failed to record appointment creation metrics", operation="create_appointment", data={"error": str(exc)})
         
-        self.events.publish_appointment_event(
+        await self.events.publish_appointment_event_async(
             "appointment.created",
             appointment_id=appointment.id,
             patient_id=patient.id,
@@ -178,7 +200,7 @@ class AppointmentService(BaseService):
         appointment = self.appointments.get_by_id(appointment_id)
         if not appointment:
             self.log_warning("Appointment not found", operation="get_appointment_state", data={"appointment_id": appointment_id})
-            raise not_found_error("Appointment not found")
+            raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
 
         self._authorize(appointment, current_user)
 
@@ -195,15 +217,15 @@ class AppointmentService(BaseService):
         if current_user.role == UserRole.patient:
             patient = self.patients.get_by_user_id(current_user.id)
             if not patient:
-                raise not_found_error("Patient profile not found")
+                raise NotFoundError("Patient profile not found", code="PATIENT_NOT_FOUND")
             patient_id = patient.id
         elif current_user.role == UserRole.provider:
             provider = self.providers.get_by_user_id(current_user.id)
             if not provider:
-                raise not_found_error("Provider profile not found")
+                raise NotFoundError("Provider profile not found", code="PROVIDER_NOT_FOUND")
             provider_id = provider.id
         elif current_user.role not in {UserRole.admin, UserRole.front_desk}:
-            raise forbidden_error()
+            raise ForbiddenError()
         items, total = self.appointments.list_scoped(patient_id=patient_id, provider_id=provider_id, limit=limit, offset=offset)
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -214,13 +236,13 @@ class AppointmentService(BaseService):
         appointment = self.appointments.get_by_id(appointment_id)
         if not appointment:
             self.log_warning("Appointment not found for cancellation", operation="cancel_appointment", data={"appointment_id": appointment_id})
-            raise not_found_error("Appointment not found")
+            raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
 
         self._authorize(appointment, current_user)
 
         if appointment.status in {AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED}:
             self.log_warning("Cannot cancel terminal appointment", operation="cancel_appointment", data={"appointment_id": appointment_id, "status": appointment.status.value})
-            raise conflict_error("Appointment is already in a terminal state")
+            raise ConflictError("Appointment is already in a terminal state", code="APPOINTMENT_TERMINAL")
 
         self.log_info("Appointment cancelled", operation="cancel_appointment", data={"appointment_id": appointment_id})
         
@@ -249,27 +271,27 @@ class AppointmentService(BaseService):
         
         appointment = self.appointments.get_by_id(appointment_id)
         if not appointment:
-            raise not_found_error("Appointment not found")
+            raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
 
         self._authorize(appointment, current_user)
 
         if appointment.status in {AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED}:
             self.log_warning("Cannot reschedule terminal appointment", operation="reschedule_appointment", data={"appointment_id": appointment_id})
-            raise conflict_error("Appointment is already in a terminal state")
+            raise ConflictError("Appointment is already in a terminal state", code="APPOINTMENT_TERMINAL")
 
         new_slot = self.slots.get_by_id(slot_id)
         if not new_slot:
-            raise not_found_error("Replacement slot not found")
+            raise NotFoundError("Replacement slot not found", code="SLOT_NOT_FOUND")
         if new_slot.status != SlotStatus.AVAILABLE:
-            raise conflict_error("Replacement slot is no longer available")
+            raise ConflictError("Replacement slot is no longer available", code="SLOT_NOT_AVAILABLE")
         if new_slot.provider_id != appointment.provider_id or new_slot.service_id != appointment.service_id:
-            raise conflict_error("Replacement slot must use the same provider and service")
+            raise ConflictError("Replacement slot must use the same provider and service", code="SLOT_MISMATCH")
 
         old_slot_id = appointment.slot_id
         try:
             updated = self.appointments.reschedule(appointment, new_slot)
         except ValueError as exc:
-            raise conflict_error(str(exc)) from exc
+            raise ConflictError(str(exc), code="RESCHEDULE_FAILED") from exc
 
         self.log_info("Appointment rescheduled", operation="reschedule_appointment", data={"appointment_id": appointment_id, "old_slot": appointment.slot_id, "new_slot": new_slot.id})
         
@@ -292,15 +314,9 @@ class AppointmentService(BaseService):
         
         appointment = self.appointments.get_by_id(appointment_id)
         if not appointment:
-            raise not_found_error("Appointment not found")
+            raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
 
-        authorize(
-            current_user,
-            Permission.VISIT_UPDATE,
-            appointment,
-            target_status=target_status,
-            provider_repository=self.providers,
-        )
+        self._authorize(appointment, current_user)
 
         if appointment.status != AppointmentStatus.CONFIRMED:
             raise AppError(
@@ -315,13 +331,13 @@ class AppointmentService(BaseService):
 
         if target_status == VisitStatus.CHECKED_IN:
             if appointment.visit_status not in {VisitStatus.NOT_STARTED, VisitStatus.CHECKED_IN}:
-                raise conflict_error("Visit is already in a later state")
+                raise ConflictError("Visit is already in a later state", code="VISIT_STATE_INVALID")
         elif target_status == VisitStatus.IN_PROGRESS:
             if appointment.visit_status not in {VisitStatus.CHECKED_IN, VisitStatus.IN_PROGRESS}:
-                raise conflict_error("Visit must be checked in before starting")
+                raise ConflictError("Visit must be checked in before starting", code="VISIT_NOT_CHECKED_IN")
         elif target_status == VisitStatus.COMPLETED:
             if appointment.visit_status != VisitStatus.IN_PROGRESS:
-                raise conflict_error("Visit must be in progress before completion")
+                raise ConflictError("Visit must be in progress before completion", code="VISIT_NOT_IN_PROGRESS")
 
         try:
             updated = self.appointments.transition_visit_status(
@@ -331,7 +347,7 @@ class AppointmentService(BaseService):
                 reason=f"visit transition to {target_status.value}",
             )
         except ValueError as exc:
-            raise conflict_error(str(exc)) from exc
+            raise ConflictError(str(exc), code="TRANSITION_FAILED") from exc
         
         self.log_info("Visit status transitioned", operation="transition_visit_status", data={"appointment_id": updated.id, "visit_status": updated.visit_status.value})
         
@@ -395,18 +411,12 @@ class AppointmentService(BaseService):
         self.log_info("Mark no-show request", operation="mark_no_show", data={"appointment_id": appointment_id, "user_id": current_user.id})
         appointment = self.appointments.get_by_id(appointment_id)
         if not appointment:
-            raise not_found_error("Appointment not found")
+            raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
         
-        authorize(
-            current_user,
-            Permission.APPOINTMENT_UPDATE,
-            appointment,
-            is_no_show=True,
-            provider_repository=self.providers,
-        )
+        self._authorize(appointment, current_user)
         
         if appointment.status in {AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED, AppointmentStatus.NO_SHOW}:
-            raise conflict_error("Appointment is already in a terminal state")
+            raise ConflictError("Appointment is already in a terminal state", code="APPOINTMENT_TERMINAL")
         
         return self.appointments.mark_no_show(appointment)
 
@@ -416,15 +426,9 @@ class AppointmentService(BaseService):
         
         appointment = self.appointments.get_by_id(appointment_id)
         if not appointment:
-            raise not_found_error("Appointment not found")
+            raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
 
-        authorize(
-            current_user,
-            Permission.BILLING_CREATE,
-            appointment,
-            patient_repository=self.patients,
-            provider_repository=self.providers,
-        )
+        self._authorize(appointment, current_user)
 
         existing = self.appointments.get_billing_by_appointment_id(appointment.id)
         if existing:

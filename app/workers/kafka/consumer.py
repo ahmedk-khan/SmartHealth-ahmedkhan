@@ -1,3 +1,5 @@
+"""Kafka analytics consumer implementation."""
+
 from __future__ import annotations
 
 import json
@@ -116,14 +118,9 @@ class AnalyticsConsumer:
                     continue
                 self.process_message(payload, message.topic)
                 self.consumer.commit()
-            except Exception as exc:  # pragma: no cover - runtime protection path
+            except Exception:
                 logger.exception("Failed to process analytics event from topic %s", message.topic)
                 continue
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    AnalyticsConsumer().run()
 
 
 __all__ = ["AnalyticsConsumer", "ConsumerConfigError"]

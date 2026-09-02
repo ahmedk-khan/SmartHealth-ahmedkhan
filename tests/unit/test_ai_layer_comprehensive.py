@@ -73,9 +73,9 @@ def client_with_fake_llm(fake_llm_container):
     app.dependency_overrides[dependencies.get_db] = override_get_db
 
     # Mock get_llm_provider to return our FakeLLM
-    # Mock ai_redis_store.allow_request to always allow (return True)
+    # Mock the app-scoped AI Redis store to always allow requests.
     with patch("app.services.assistant_service.get_llm_provider") as mock_get_provider:
-        with patch("app.api.v1.endpoints.assistant.ai_redis_store.allow_request") as mock_allow:
+        with patch.object(app.state.ai_redis_store, "allow_request") as mock_allow:
             mock_get_provider.return_value = fake_llm_container.llm
             mock_allow.return_value = True  # Allow all requests in tests
             

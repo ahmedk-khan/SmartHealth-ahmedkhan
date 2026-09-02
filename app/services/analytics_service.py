@@ -1,6 +1,6 @@
 import datetime
 
-from app.core.exceptions import app_error
+from app.core.exceptions import AppError
 from app.repositories.analytics import AnalyticsRepository
 from app.repositories.ai_interactions import AIInteractionRepository
 from app.core.metrics import set_ai_booking_conversion_rate, set_ai_booking_conversions
@@ -20,7 +20,7 @@ class AnalyticsService(BaseService):
         try:
             target_day = datetime.date.fromisoformat(day) if day else datetime.date.today()
         except ValueError as exc:
-            raise app_error("Invalid date format", status_code=400, error_type="validation_error", detail=str(exc)) from exc
+            raise AppError("Invalid date format", status_code=400, error_type="validation_error", code="VALIDATION_FAILED", detail=str(exc)) from exc
 
         aggregate = self.repository.get_daily(target_day)
 
@@ -44,7 +44,7 @@ class AnalyticsService(BaseService):
         try:
             rollup_metrics = self.repository.dashboard_rollup_metrics(start_date, end_date)
         except ValueError as exc:
-            raise app_error("Invalid analytics date range", status_code=400, error_type="validation_error") from exc
+            raise AppError("Invalid analytics date range", status_code=400, error_type="validation_error", code="VALIDATION_FAILED") from exc
         return rollup_metrics if rollup_metrics is not None else self._raw_dashboard_metrics(start_date, end_date)
 
     def reconcile_metrics(self) -> dict[str, object]:

@@ -4,6 +4,7 @@ from app.models import VisitStatus
 from app.core.exceptions import ForbiddenError
 from app.core.authorization.permissions import Permission, ROLE_PERMISSIONS
 from app.core.authorization.service import authorize
+from app.core.authorization.policies import ServiceOwnershipGuard
 from app.core.authorization.policies import (
     PatientPolicy,
     ProviderPolicy,
@@ -136,6 +137,16 @@ def test_provider_policy():
     assert ProviderPolicy.can_access_records(provider_user, provider_record, repo) is True
     assert ProviderPolicy.can_access_records(other_provider_user, provider_record, repo) is False
     assert ProviderPolicy.can_access_records(admin, provider_record, repo) is True
+
+
+def test_service_ownership_guard_uses_service_providers_relationship():
+    owner = User(id=20, role=UserRole.provider)
+    other_provider = User(id=21, role=UserRole.provider)
+    service = MockService(id=500)
+    service.providers = [MockProvider(id=200, user_id=20)]
+
+    assert ServiceOwnershipGuard(owner, service).passed() is True
+    assert ServiceOwnershipGuard(other_provider, service).passed() is False
 
 
 def test_slot_policy():

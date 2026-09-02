@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.settings import Settings
+from app.core.authorization.permissions import Permission, ROLE_PERMISSIONS
 from app.services.safety_service import SafetyCheck
 from app.services.assistant_service import AssistantService
 from app.services.assistant_prompts import DISCLAIMER
@@ -22,6 +23,16 @@ def test_production_requires_llm_credentials():
 def test_unknown_llm_provider_is_rejected():
     with pytest.raises(ValueError, match="Unsupported LLM provider"):
         Settings(app_env="test", llm_provider="not-a-provider")
+
+
+def test_ai_role_permissions_match_business_boundaries():
+    from app.models import UserRole
+
+    assert Permission.ANALYTICS_READ not in ROLE_PERMISSIONS[UserRole.patient]
+    assert Permission.ANALYTICS_READ not in ROLE_PERMISSIONS[UserRole.provider]
+    assert Permission.ANALYTICS_READ in ROLE_PERMISSIONS[UserRole.front_desk]
+    assert Permission.ANALYTICS_READ in ROLE_PERMISSIONS[UserRole.admin]
+    assert Permission.APPOINTMENT_CREATE in ROLE_PERMISSIONS[UserRole.patient]
 
 
 def test_acute_heart_burning_is_provider_independent():

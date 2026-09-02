@@ -1,12 +1,12 @@
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.authorization import Permission, require_permission
-from app.core.ai_controls import ai_redis_store
+from app.core.ai_controls import AIRedisStore, get_ai_redis_store
 from app.core.dependencies import get_db
 from app.models import User
 from app.schemas.assistant import AssistantReportRequest
@@ -22,8 +22,9 @@ async def generate_utilisation_report(
     payload: AssistantReportRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.ANALYTICS_READ)),
+    ai_store: AIRedisStore = Depends(get_ai_redis_store),
 ):
-    if not await ai_redis_store.allow_request(current_user.id):
+    if not await ai_store.allow_request(current_user.id):
         from fastapi import HTTPException
 
         raise HTTPException(status_code=429, detail="AI request rate limit exceeded")
@@ -44,8 +45,8 @@ async def generate_utilisation_report(
             yield f"event: metadata\ndata: {json.dumps(metadata)}\n\n"
             yield f"event: citations\ndata: {json.dumps([{'source': 'analytics_daily', 'period_start': report['period_start'], 'period_end': report['period_end']}])}\n\n"
             yield f"event: done\ndata: {json.dumps({'report': report, 'metadata': metadata})}\n\n"
-        except Exception as exc:
-            yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+        except Exception:
+            yield f"event: error\ndata: {json.dumps({'message': 'Report generation failed'})}\n\n"
             yield f"event: done\ndata: {json.dumps({'error': True})}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
@@ -60,14 +61,15 @@ async def generate_utilisation_report(
 async def queue_utilisation_report_job(
     payload: AssistantReportRequest,
     current_user: User = Depends(require_permission(Permission.ANALYTICS_READ)),
+    ai_store: AIRedisStore = Depends(get_ai_redis_store),
 ):
     task = generate_utilisation_report_task.apply_async(
         args=[payload.period_start.isoformat(), payload.period_end.isoformat()],
         kwargs={"user_id": current_user.id},
     )
-    from app.core.ai_controls import ai_redis_store
-
-    await ai_redis_store.set_task_owner(task.id, current_user.id)
+    if not await ai_store.set_task_owner(task.id, current_user.id):
+        task.revoke(terminate=False)
+        raise HTTPException(status_code=503, detail="Queued report ownership is unavailable")
     return {
         "task_id": task.id,
         "state": task.state,

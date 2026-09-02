@@ -204,7 +204,10 @@ class AppointmentSagaWorkflow:
                 retry_policy=TRANSIENT_ACTIVITY_RETRY,
             )
             if event_result.get("status") == "delivery_failed":
-                raise RuntimeError("Appointment event was not published")
+                logger.warning(
+                    "Appointment confirmed; event queued in outbox after Kafka delivery failure",
+                    extra={"appointment_id": appointment_id},
+                )
             logger.info("Appointment saga workflow completed successfully", extra={"appointment_id": appointment_id})
             return {"workflow_status": "CONFIRMED", "appointment_id": appointment_id}
         except Exception as exc:
@@ -280,7 +283,10 @@ async def _run_appointment_saga_locally(appointment_data: dict[str, Any]) -> dic
             "status": "CONFIRMED",
         })
         if event_result.get("status") == "delivery_failed":
-            raise RuntimeError("Appointment event was not published")
+            logger.warning(
+                "Appointment confirmed; event queued in outbox after Kafka delivery failure",
+                extra={"appointment_id": appointment_id},
+            )
         logger.info("Appointment saga completed locally", extra={"appointment_id": appointment_id})
         return {"workflow_status": "CONFIRMED", "appointment_id": appointment_id}
     except Exception:

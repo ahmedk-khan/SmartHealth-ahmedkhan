@@ -451,6 +451,16 @@ def test_staff_can_create_and_list_services_with_public_filters(client, monkeypa
 
     _create_user_record("admin@example.com", "secret123", "admin")
     _create_user(client, "patient@example.com", "secret123", "patient")
+    provider_user = _create_user_record("provider@example.com", "secret123", "provider")
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        provider = _ensure_provider(db, provider_user.id)
+        provider_id = provider.id
+    finally:
+        db.close()
+
     admin_token = _login(client, "admin@example.com", "secret123")
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
@@ -470,6 +480,7 @@ def test_staff_can_create_and_list_services_with_public_filters(client, monkeypa
             "preparation_instructions": "Bring prior imaging reports.",
             "department_id": department_id,
             "is_published": True,
+            "provider_id": provider_id,
         },
         headers=admin_headers,
     )
@@ -487,6 +498,142 @@ def test_staff_can_create_and_list_services_with_public_filters(client, monkeypa
     data = public_response.json()
     assert data["total"] >= 1
     assert data["items"][0]["name"] == "MRI Scan"
+
+
+@pytest.mark.parametrize("role", ["admin", "front_desk"])
+def test_staff_service_creation_requires_provider_id(client, role):
+    _create_user_record(f"{role}@example.com", "secret123", role)
+    _create_user_record("provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        department = Department(name="Neurology", description="Brain health")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+        department_id = department.id
+    finally:
+        db.close()
+
+    token = _login(client, f"{role}@example.com", "secret123")
+    response = client.post(
+        "/api/v1/services",
+        json={"name": "MRI Scan", "department_id": department_id},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_provider_service_creation_auto_links_to_own_provider(client):
+    _create_user_record("provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        department = Department(name="Cardiology", description="Heart health")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+        department_id = department.id
+    finally:
+        db.close()
+
+    token = _login(client, "provider@example.com", "secret123")
+    response = client.post(
+        "/api/v1/services",
+        json={"name": "Provider Checkup", "department_id": department_id},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "provider@example.com").one()
+        provider = db.query(Provider).filter(Provider.user_id == user.id).one()
+        service = db.query(Service).filter(Service.id == response.json()["id"]).one()
+        assert [linked.id for linked in service.providers] == [provider.id]
+    finally:
+        db.close()
+
+
+def test_provider_cannot_create_service_for_another_provider(client):
+    _create_user_record("provider@example.com", "secret123", "provider")
+    _create_user_record("other-provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+        other_user = db.query(User).filter(User.email == "other-provider@example.com").one()
+        provider = _ensure_provider(db, provider_user.id)
+        other_provider = _ensure_provider(db, other_user.id)
+        department = Department(name="Orthopedics", description="Bone health")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+        other_provider_id = other_provider.id
+        department_id = department.id
+    finally:
+        db.close()
+
+    token = _login(client, "provider@example.com", "secret123")
+    response = client.post(
+        "/api/v1/services",
+        json={
+            "name": "Other Provider Service",
+            "department_id": department_id,
+            "provider_id": other_provider_id,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_provider_service_listing_is_scoped_to_own_services(client):
+    _create_user_record("provider@example.com", "secret123", "provider")
+    _create_user_record("other-provider@example.com", "secret123", "provider")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        department = Department(name="Dermatology", description="Skin health")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+        department_id = department.id
+    finally:
+        db.close()
+
+    first_token = _login(client, "provider@example.com", "secret123")
+    second_token = _login(client, "other-provider@example.com", "secret123")
+    first_headers = {"Authorization": f"Bearer {first_token}"}
+    second_headers = {"Authorization": f"Bearer {second_token}"}
+
+    first_service = client.post(
+        "/api/v1/services",
+        json={"name": "First Provider Service", "department_id": department_id},
+        headers=first_headers,
+    )
+    second_service = client.post(
+        "/api/v1/services",
+        json={"name": "Second Provider Service", "department_id": department_id},
+        headers=second_headers,
+    )
+    assert first_service.status_code == 200
+    assert second_service.status_code == 200
+
+    response = client.get("/api/v1/services", headers=first_headers)
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["name"] for item in response.json()["items"]] == ["First Provider Service"]
 
 
 def test_appointment_and_status_history_are_created_for_slot(client):
@@ -853,7 +1000,7 @@ def test_billing_precheck_is_idempotent(client):
 def test_analytics_consumer_deduplicates_replayed_visit_completed_event(client):
     from app.db import SessionLocal
     from app.models import AnalyticsAppointmentDaily, AnalyticsProcessedEvent
-    from app.workers.kafka.analytics_consumer import AnalyticsConsumer
+    from app.workers.kafka.consumer import AnalyticsConsumer
 
     consumer = AnalyticsConsumer()
     payload = {

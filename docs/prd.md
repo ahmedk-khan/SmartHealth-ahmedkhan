@@ -80,4 +80,13 @@ The system is scoped to one clinic and demonstrates authorization, transactional
 
 ## 7. Out of scope
 
-Multi-clinic tenancy, real payment/insurance integrations, clinical records, provider time-off rules, and production secret management are outside this demonstration.
+The following are **explicitly out of scope** and should not be implemented:
+
+- **Real email/SMS delivery:** No SMTP, SendGrid, Twilio, or similar integrations. Notifications are tracked in the database with status markers (PENDING → SENT) but no actual delivery mechanism exists.
+- **Real payment/insurance integrations:** Billing pre-check is a mock that always approves or fails based on configuration.
+- **Calendar synchronization:** No Google Calendar, Outlook, or iCalendar integration.
+- **Document parsing:** No PDF/image OCR or scanning. All operational content is text-based.
+- **Multi-clinic tenancy:** Single clinic scope only. No cross-facility inventory or schedule synchronization.
+- **Clinical records management:** No EHR integration or medical record storage.
+- **Provider time-off rules:** No provider unavailability or vacation schedules.
+- **Production secret management:** Secrets are hardcoded for demo purposes. Use a vault in production.

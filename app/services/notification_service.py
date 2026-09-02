@@ -1,4 +1,4 @@
-from app.core.exceptions import not_found_error
+from app.core.exceptions import NotFoundError
 import datetime
 
 from app.models import Appointment, Notification, NotificationStatus
@@ -28,7 +28,7 @@ class NotificationService(BaseService):
             return existing
         appointment = self.appointments.get_by_id_or_none(appointment_id)
         if appointment is None:
-            raise not_found_error("Appointment not found")
+            raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
         notification = Notification(
             user_id=appointment.patient.user_id,
             type="APPOINTMENT_REMINDER",
@@ -48,7 +48,7 @@ class NotificationService(BaseService):
     def send_appointment_reminder(self, appointment_id: int) -> dict[str, object]:
         appointment = self.appointments.get_by_id_or_none(appointment_id)
         if appointment is None:
-            raise not_found_error("Appointment not found")
+            raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
 
         notification = self.schedule_appointment_reminder(appointment_id)
         if notification.status == NotificationStatus.CANCELLED:
@@ -75,7 +75,7 @@ class NotificationService(BaseService):
     def send_visit_follow_up(self, appointment_id: int) -> dict[str, object]:
         appointment = self.appointments.get_by_id_or_none(appointment_id)
         if appointment is None:
-            raise not_found_error("Appointment not found")
+            raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
 
         notification = self.notifications.get_follow_up(appointment_id)
         if notification is None:

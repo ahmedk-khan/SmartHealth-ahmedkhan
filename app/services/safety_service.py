@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 
-from app.core.exceptions import validation_error
+from app.core.exceptions import ValidationError
 
 
 @dataclass(frozen=True)
@@ -25,11 +25,11 @@ class SafetyCheck:
     def normalize(self, question: str) -> str:
         normalized = " ".join(question.split())
         if not normalized:
-            raise validation_error("Question cannot be empty")
+            raise ValidationError("Question cannot be empty", code="QUESTION_EMPTY")
         if len(normalized) > 2000:
-            raise validation_error("Question is too long")
+            raise ValidationError("Question is too long", code="QUESTION_TOO_LONG")
         if self._looks_gibberish(normalized):
-            raise validation_error("Question looks invalid")
+            raise ValidationError("Question looks invalid", code="QUESTION_INVALID")
         return normalized
 
     def _looks_gibberish(self, question: str) -> bool:

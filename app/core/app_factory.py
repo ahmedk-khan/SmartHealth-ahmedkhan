@@ -26,7 +26,7 @@ from app.core.http_metrics_middleware import HTTPMetricsMiddleware
 from app.core.logging import configure_logging
 from app.core.middleware import CorrelationIdMiddleware
 from app.core.rate_limit import limiter
-from app.core.ai_controls import ai_redis_store
+from app.core.ai_controls import AIRedisStore
 from app.core.security_headers import SecurityHeadersMiddleware
 
 try:
@@ -57,30 +57,64 @@ def create_app() -> FastAPI:
             if settings.app_env.lower() in {"production", "prod"}:
                 if redis is None:
                     raise RuntimeError("Redis client is not installed")
-                redis_client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+                redis_client = redis.Redis.from_url(
+                    settings.redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=1,
+                    socket_timeout=1,
+                )
                 redis_client.ping()
 
             if settings.kafka_enabled:
-                if KafkaProducer is None:
-                    raise RuntimeError("Kafka client is not installed")
-                kafka_producer = KafkaProducer(
-                    bootstrap_servers=settings.kafka_bootstrap_servers,
-                    api_version_auto_timeout_ms=3000,
-                    request_timeout_ms=3000,
-                )
-                if not kafka_producer.bootstrap_connected():
-                    raise RuntimeError("Kafka broker is not available")
+                try:
+                    if KafkaProducer is None:
+                        raise RuntimeError("Kafka client is not installed")
+                    kafka_producer = KafkaProducer(
+                        bootstrap_servers=settings.kafka_bootstrap_servers,
+                        api_version_auto_timeout_ms=3000,
+                        request_timeout_ms=3000,
+                    )
+                    if not kafka_producer.bootstrap_connected():
+                        logger.warning(
+                            "Kafka broker is not available during startup; continuing without Kafka producer at %s",
+                            settings.kafka_bootstrap_servers,
+                        )
+                        kafka_producer.close(timeout=3)
+                        kafka_producer = None
+                except Exception as exc:
+                    logger.warning(
+                        "Kafka producer unavailable during startup; continuing in degraded mode. broker=%s error=%s",
+                        settings.kafka_bootstrap_servers,
+                        exc,
+                        exc_info=True,
+                    )
+                    kafka_producer = None
 
             app.state.redis_client = redis_client
             app.state.kafka_producer = kafka_producer
             yield
         finally:
-            await ai_redis_store.close()
+            try:
+                await app.state.ai_redis_store.close()
+            except Exception:
+                logger.error("Failed to close AI Redis store during shutdown", exc_info=True)
+
             if kafka_producer is not None:
-                kafka_producer.close(timeout=3)
+                try:
+                    kafka_producer.close(timeout=3)
+                except Exception:
+                    logger.error("Failed to close Kafka producer during shutdown", exc_info=True)
+
             if redis_client is not None:
-                redis_client.close()
-            engine.dispose()
+                try:
+                    redis_client.close()
+                except Exception:
+                    logger.error("Failed to close Redis client during shutdown", exc_info=True)
+
+            try:
+                engine.dispose()
+            except Exception:
+                logger.error("Failed to dispose database engine during shutdown", exc_info=True)
 
     app = FastAPI(
         title="SmartHealth API",
@@ -100,21 +134,35 @@ def create_app() -> FastAPI:
     )
     app.state.limiter = limiter
     app.state.app_env = settings.app_env.lower()
+    app.state.ai_redis_store = AIRedisStore()
 
     app.openapi_tags = [
-        {"name": "health", "description": "Health and readiness checks for the service."},
-        {"name": "auth", "description": "Authentication and user identity flows."},
-        {"name": "appointments", "description": "Appointment booking, cancellation, rescheduling, and visit-flow operations."},
-        {"name": "services", "description": "Service catalog management and publication workflows."},
-        {"name": "slots", "description": "Slot availability and reservation operations."},
-        {"name": "providers", "description": "Provider profiles and provider-specific schedules."},
-        {"name": "patients", "description": "Patient profiles and patient-related lookup endpoints."},
-        {"name": "departments", "description": "Department catalog and organization metadata."},
-        {"name": "tasks", "description": "Background task status and operational lookup endpoints."},
-        {"name": "analytics", "description": "Operational and analytics summaries for reporting."},
-        {"name": "public", "description": "Public-facing catalog endpoints available without authenticated access."},
-        {"name": "search", "description": "Authenticated semantic search over published service content."},
-        {"name": "assistant", "description": "Healthcare navigation assistant and utilisation report generation."},
+        # System & Authentication
+        {"name": "health", "description": "Health checks and service status endpoints."},
+        {"name": "auth", "description": "Authentication, login, token management, and user identity flows."},
+        
+        # Core Resources
+        {"name": "patients", "description": "Patient profiles, demographics, and patient-specific lookups."},
+        {"name": "providers", "description": "Provider profiles, provider schedules, and provider-specific data."},
+        {"name": "departments", "description": "Department catalog, organization structure, and metadata."},
+        
+        # Scheduling & Availability
+        {"name": "appointments", "description": "Appointment booking, cancellation, rescheduling, visit management, and workflows."},
+        {"name": "slots", "description": "Availability slots, slot reservations, and schedule management."},
+        {"name": "services", "description": "Service offerings, service catalog, publishing, and service management."},
+        
+        # Analytics & Operations
+        {"name": "analytics", "description": "Operational analytics, utilization metrics, and performance reporting."},
+        {"name": "reports", "description": "Generated reports, analytics exports, and data summaries."},
+        {"name": "tasks", "description": "Background task status, job tracking, and operational jobs."},
+        
+        # Discovery & Search
+        {"name": "search", "description": "Semantic search for services and appointment availability."},
+        {"name": "public", "description": "Public catalog endpoints available without authentication."},
+        
+        # User Features
+        {"name": "notifications", "description": "User notifications, alerts, and message delivery."},
+        {"name": "assistant", "description": "AI healthcare assistant, recommendations, and utilization report generation."},
     ]
 
     app.add_middleware(CorrelationIdMiddleware)
@@ -137,9 +185,9 @@ def create_app() -> FastAPI:
     app.exception_handler(SQLAlchemyError)(database_exception_handler)
     app.exception_handler(Exception)(unexpected_exception_handler)
 
-    @app.get("/", tags=["health"], summary="Service status", description="Returns a simple readiness signal to confirm the API is running.")
+    @app.get("/", tags=["health"], summary="Service status", description="Returns the current API service status.")
     def root():
-        return {"message": "app api is running"}
+        return {"message": "SmartHealth API is running"}
 
     @app.get("/metrics", tags=["health"], summary="Prometheus metrics", description="Exposes Prometheus-formatted runtime metrics for scraping and monitoring.")
     async def metrics():

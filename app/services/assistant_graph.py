@@ -94,9 +94,8 @@ class AssistantGraph:
         # Conditional edge: refused requests skip to end
         graph.add_conditional_edges(
             "safety_check",
-            lambda state: "end" if state.refused else "retrieve"
+            lambda state: END if state.refused else "retrieve"
         )
-        graph.add_edge("end", END)
         
         graph.add_edge("retrieve", "generate")
         graph.add_edge("generate", "check_grounding")
@@ -150,7 +149,7 @@ class AssistantGraph:
         
         return state
     
-    def _retrieve_node(self, state: AssistantState) -> AssistantState:
+    async def _retrieve_node(self, state: AssistantState) -> AssistantState:
         """
         Retrieve node: Fetch relevant data for the question.
         
@@ -171,7 +170,7 @@ class AssistantGraph:
                 pass
             else:
                 # Search for services
-                results = search_services(self.db, state.question, settings.retrieval_top_k)
+                results = await search_services(self.db, state.question, settings.retrieval_top_k)
                 state.retrieved_services = results
                 state.retrieved_ids = [r.get("service_id", 0) for r in results]
         except Exception as e:
@@ -230,9 +229,9 @@ class AssistantGraph:
         return state
     
     async def run(self, state: AssistantState) -> AssistantState:
-        """Execute the graph and return final state."""
-        result = self.graph.invoke(state)
-        return result
+        """Execute this alternate pipeline asynchronously; production uses AssistantService."""
+        result = await self.graph.ainvoke(state)
+        return AssistantState(**result)
 
 
 # Graph visualization (for documentation)

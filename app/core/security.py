@@ -8,7 +8,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from passlib.exc import UnknownHashError
 
-from app.core.exceptions import invalid_token_error
+from app.core.exceptions import UnauthorizedError
 from app.core.settings import settings
 
 pwd_context = CryptContext(schemes=["bcrypt", "pbkdf2_sha256"], deprecated="auto")
@@ -53,4 +53,4 @@ def decode_access_token(token: str) -> dict[str, Any]:
         import logging
 
         logging.getLogger(__name__).warning("JWT validation failed", exc_info=exc)
-        raise invalid_token_error() from exc
+        raise UnauthorizedError("Could not validate credentials", code="INVALID_TOKEN") from exc

@@ -8,6 +8,8 @@ import json
 import logging
 from typing import Any
 
+from fastapi import Request
+
 from app.core.settings import settings
 
 try:
@@ -96,7 +98,7 @@ class AIRedisStore:
             await self._client.aclose()
             self._client = None
 
-    async def set_task_owner(self, task_id: str, user_id: int, ttl_seconds: int = 86400) -> None:
+    async def set_task_owner(self, task_id: str, user_id: int, ttl_seconds: int = 86400) -> bool:
         """Associate a queued task with its requester for polling authorization."""
         client = self._get_client()
         key = f"smarthealth:task-owner:{task_id}"
@@ -104,10 +106,11 @@ class AIRedisStore:
             if client is not None:
                 await client.setex(key, ttl_seconds, str(user_id))
             else:
-                self._task_owners[task_id] = user_id
+                return False
+            return True
         except Exception:
-            logger.warning("Task ownership store unavailable; using process-local ownership", exc_info=True)
-            self._task_owners[task_id] = user_id
+            logger.warning("Task ownership store unavailable", exc_info=True)
+            return False
 
     async def get_task_owner(self, task_id: str) -> int | None:
         client = self._get_client()
@@ -128,4 +131,5 @@ class AIRedisStore:
         return f"smarthealth:ai:answer:{digest}"
 
 
-ai_redis_store = AIRedisStore()
+def get_ai_redis_store(request: Request) -> AIRedisStore:
+    return request.app.state.ai_redis_store

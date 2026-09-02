@@ -133,7 +133,7 @@ class OpenAICompatibleLLM(LLMProvider):
 
 def get_llm_provider() -> LLMProvider:
     if not settings.llm_api_key:
-        if settings.use_fake_llm:
+        if settings.use_fake_llm or settings.app_env.lower() in {"local", "test", "development", "dev"}:
             return FakeLLM()
         raise ExternalServiceError(
             "LLM provider is not configured; set LLM_API_KEY or explicitly enable USE_FAKE_LLM for development/tests.",

@@ -2,7 +2,7 @@
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db
-from app.core.authorization import require_permission, authorize, Permission
+from app.core.authorization import require_permission, Permission, SlotOwnershipGuard
 from app.core.exceptions import (
     NotFoundError,
     SlotNotFoundError,
@@ -31,12 +31,10 @@ def create_slot(
     current_user: User = Depends(require_permission(Permission.SLOT_CREATE)),
 ):
     repository = SlotRepository(db)
-    authorize(
-        current_user,
-        Permission.SLOT_CREATE,
-        payload.provider_id,
-        provider_repository=ProviderRepository(db),
-    )
+    provider = ProviderRepository(db).get_by_id(payload.provider_id)
+    if not provider:
+        raise NotFoundError("Provider not found", code="PROVIDER_NOT_FOUND")
+    SlotOwnershipGuard(current_user, provider).enforce()
     if not repository.validate_provider_and_service(payload.provider_id, payload.service_id):
         raise NotFoundError("Provider or service not found", code="PROVIDER_OR_SERVICE_NOT_FOUND")
     slot = repository.create_slot(payload.model_dump())
@@ -117,7 +115,7 @@ def update_slot(
     slot = SlotRepository(db).get_by_id(slot_id)
     if not slot:
         raise SlotNotFoundError()
-    authorize(current_user, Permission.SLOT_UPDATE, slot, provider_repository=ProviderRepository(db))
+    SlotOwnershipGuard(current_user, slot).enforce()
     if slot.status != SlotStatus.AVAILABLE:
         raise ConflictError("Booked slots cannot be edited", code="SLOT_NOT_EDITABLE")
     if payload.provider_id != slot.provider_id or payload.patient_id is not None or payload.status != SlotStatus.AVAILABLE:
@@ -143,7 +141,7 @@ def delete_slot(
     slot = repository.get_by_id(slot_id)
     if not slot:
         raise SlotNotFoundError()
-    authorize(current_user, Permission.SLOT_DELETE, slot, provider_repository=ProviderRepository(db))
+    SlotOwnershipGuard(current_user, slot).enforce()
     if slot.status != SlotStatus.AVAILABLE:
         raise ConflictError("Booked slots cannot be deleted", code="SLOT_NOT_DELETABLE")
     repository.delete_slot(slot)

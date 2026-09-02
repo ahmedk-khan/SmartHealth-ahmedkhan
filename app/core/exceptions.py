@@ -6,7 +6,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.core.logging import get_request_id
 
 
@@ -139,31 +139,6 @@ class ExternalServiceError(AppError):
         )
 
 
-# Legacy backward-compatibility factory helpers
-def app_error(message: str, status_code: int = 400, error_type: str = "app_error", detail: Any = None) -> AppError:
-    return AppError(message=message, status_code=status_code, error_type=error_type, detail=detail)
-
-
-def forbidden_error(message: str = "Forbidden", detail: Any = None) -> ForbiddenError:
-    return ForbiddenError(message=message, detail=detail)
-
-
-def not_found_error(message: str = "Not found", detail: Any = None) -> NotFoundError:
-    return NotFoundError(message=message, detail=detail)
-
-
-def conflict_error(message: str = "Conflict", detail: Any = None) -> ConflictError:
-    return ConflictError(message=message, detail=detail)
-
-
-def validation_error(message: str = "Validation failed", detail: Any = None) -> ValidationError:
-    return ValidationError(message=message, detail=detail)
-
-
-def invalid_token_error(message: str = "Could not validate credentials", detail: Any = None) -> UnauthorizedError:
-    return UnauthorizedError(message=message, code="INVALID_TOKEN", detail=detail)
-
-
 def format_error_payload(
     error_type: str,
     message: str,
@@ -267,6 +242,19 @@ def database_exception_handler(request: Request, exc: SQLAlchemyError) -> JSONRe
         request_id,
         exc_info=exc,
     )
+
+    if isinstance(exc, IntegrityError):
+        return JSONResponse(
+            status_code=409,
+            content=format_error_payload(
+                error_type="conflict",
+                message="Resource already exists",
+                code="RESOURCE_ALREADY_EXISTS",
+                detail=None,
+                request_id=request_id,
+            ),
+        )
+
     return JSONResponse(
         status_code=500,
         content=format_error_payload(

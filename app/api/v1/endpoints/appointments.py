@@ -15,7 +15,7 @@ from app.services.communication_service import CommunicationService
 from app.services.llm_provider import get_llm_provider
 
 from app.core.logging import get_correlation_id
-from app.core.ai_controls import ai_redis_store
+from app.core.ai_controls import AIRedisStore, get_ai_redis_store
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
@@ -133,8 +133,9 @@ async def generate_appointment_summary(
     payload: AppointmentSummaryRequest = AppointmentSummaryRequest(),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin_or_front_desk),
+    ai_store: AIRedisStore = Depends(get_ai_redis_store),
 ):
-    if not await ai_redis_store.allow_request(current_user.id):
+    if not await ai_store.allow_request(current_user.id):
         raise HTTPException(status_code=429, detail="AI request rate limit exceeded")
 
     async def events() -> AsyncIterator[str]:
@@ -152,8 +153,8 @@ async def generate_appointment_summary(
                 yield f"event: text\ndata: {json.dumps({'token': token + ' '})}\n\n"
             yield f"event: metadata\ndata: {json.dumps(metadata_payload)}\n\n"
             yield f"event: done\ndata: {json.dumps({'content': content, 'metadata': metadata_payload})}\n\n"
-        except Exception as exc:
-            yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+        except Exception:
+            yield f"event: error\ndata: {json.dumps({'message': 'Appointment summary generation failed'})}\n\n"
             yield f"event: done\ndata: {json.dumps({'error': True})}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
@@ -165,8 +166,9 @@ async def generate_appointment_followup(
     payload: AppointmentFollowupRequest = AppointmentFollowupRequest(),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin_or_front_desk),
+    ai_store: AIRedisStore = Depends(get_ai_redis_store),
 ):
-    if not await ai_redis_store.allow_request(current_user.id):
+    if not await ai_store.allow_request(current_user.id):
         raise HTTPException(status_code=429, detail="AI request rate limit exceeded")
 
     async def events() -> AsyncIterator[str]:
@@ -184,8 +186,8 @@ async def generate_appointment_followup(
                 yield f"event: text\ndata: {json.dumps({'token': token + ' '})}\n\n"
             yield f"event: metadata\ndata: {json.dumps(metadata_payload)}\n\n"
             yield f"event: done\ndata: {json.dumps({'content': content, 'metadata': metadata_payload})}\n\n"
-        except Exception as exc:
-            yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+        except Exception:
+            yield f"event: error\ndata: {json.dumps({'message': 'Appointment follow-up generation failed'})}\n\n"
             yield f"event: done\ndata: {json.dumps({'error': True})}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")

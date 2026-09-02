@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
-from app.core.exceptions import app_error
+from app.core.exceptions import AppError
 from app.core.settings import settings
 from app.models import User
 from app.repositories import ContentChunkRepository
@@ -56,10 +56,11 @@ async def search_services_scoped(
         query_embedding = (await generate_embeddings([query]))[0]
     except Exception as exc:
         logger.exception("Failed to generate query embedding", extra={"query": query})
-        raise app_error(
+        raise AppError(
             "Search embedding generation failed",
             status_code=503,
             error_type="embedding_generation_failed",
+            code="EMBEDDING_GENERATION_FAILED",
         ) from exc
     
     # Search candidates from vector store
@@ -70,10 +71,11 @@ async def search_services_scoped(
         candidates = await run_in_threadpool(repository.search_candidates, query_embedding, limit * 2)
     except SQLAlchemyError as exc:
         logger.exception("Database search candidates query failed", extra={"query": query, "limit": limit})
-        raise app_error(
+        raise AppError(
             "Service search is temporarily unavailable",
             status_code=503,
             error_type="search_unavailable",
+            code="SEARCH_UNAVAILABLE",
         ) from exc
     
     # Filter by threshold and build results

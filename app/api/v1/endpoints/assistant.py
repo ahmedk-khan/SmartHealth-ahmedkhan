@@ -3,7 +3,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,7 @@ from app.core.dependencies import get_current_user, get_db
 from app.models import User
 from app.schemas.assistant import AssistantAskRequest
 from app.services.assistant_service import AssistantService
-from app.core.ai_controls import ai_redis_store
+from app.core.ai_controls import AIRedisStore, get_ai_redis_store
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 logger = logging.getLogger(__name__)
@@ -21,13 +21,15 @@ logger = logging.getLogger(__name__)
 @router.post("/ask", summary="Ask the healthcare navigation assistant")
 async def ask_assistant(
     payload: AssistantAskRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ai_store: AIRedisStore = Depends(get_ai_redis_store),
 ):
-    service = AssistantService(db)
+    service = AssistantService(db, ai_store=ai_store)
     normalized_question = service.safety.normalize(payload.question)
     decision = service.safety.classify(normalized_question)
-    if not decision.refused and not await ai_redis_store.allow_request(current_user.id):
+    if not decision.refused and not await ai_store.allow_request(current_user.id):
         raise HTTPException(status_code=429, detail="AI request rate limit exceeded")
     conversation_history = []
     if payload.conversation_id and not decision.refused:
@@ -56,6 +58,12 @@ async def ask_assistant(
             elif event["type"] == "text":
                 final_answer += event["value"]
                 yield f"event: text\ndata: {json.dumps({'token': event['value']})}\n\n"
+            elif event["type"] == "error":
+                error = {
+                    **event["value"],
+                    "request_id": getattr(request.state, "request_id", None),
+                }
+                yield f"event: error\ndata: {json.dumps({'error': error})}\n\n"
             else:
                 yield f"data: {json.dumps({'token': event['value']})}\n\n"
         yield f"event: done\ndata: {json.dumps({'answer': final_answer.strip(), 'citations': citations})}\n\n"

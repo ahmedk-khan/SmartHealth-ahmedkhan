@@ -4,7 +4,7 @@ from datetime import date
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import app_error
+from app.core.exceptions import AppError
 from app.repositories.analytics import AnalyticsRepository
 from app.schemas.assistant import UtilisationReport
 from app.services.assistant_prompts import PROMPT_REPORT_V1
@@ -31,7 +31,7 @@ class UtilisationService:
                 "failed_workflows": values["failed_workflows_total"],
             }
         except ValueError as exc:
-            raise app_error("Invalid utilisation report period", status_code=422, error_type="validation_error") from exc
+            raise AppError("Invalid utilisation report period", status_code=422, error_type="validation_error", code="VALIDATION_FAILED") from exc
         prompt_source = {
             **source,
             "period_start": source["period_start"].isoformat(),
@@ -48,4 +48,4 @@ class UtilisationService:
                 continue
             # Analytics, rather than model output, is authoritative for every number.
             return UtilisationReport.model_validate({**report.model_dump(), **source})
-        raise app_error("The utilisation report could not be validated", status_code=502, error_type="report_invalid")
+        raise AppError("The utilisation report could not be validated", status_code=502, error_type="report_invalid", code="REPORT_INVALID")

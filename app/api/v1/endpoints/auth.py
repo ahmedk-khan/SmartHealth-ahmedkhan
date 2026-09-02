@@ -5,6 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db, get_current_user
+from app.core.exceptions import ForbiddenError
 from app.core.rate_limit import limiter
 from app.core.settings import settings
 from app.models import User
@@ -25,6 +26,23 @@ router = APIRouter(tags=["auth"])
 def register(request: Request, user_in: UserCreate, db: Session = Depends(get_db)):
     service = AuthService(db)
     return service.register(user_in)
+
+
+@router.post(
+    "/register/front-desk",
+    response_model=UserRead,
+    summary="Create a front-desk account",
+    description="Creates a front-desk account. Only an authenticated administrator may use this endpoint.",
+)
+def register_front_desk(
+    request: Request,
+    user_in: UserCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role != UserRole.admin:
+        raise ForbiddenError("Only an administrator can create front-desk accounts")
+    return AuthService(db).register_front_desk(user_in)
 
 
 @router.post(

@@ -6,7 +6,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app.core.exceptions import AppError, UnauthorizedError, ForbiddenError, invalid_token_error
+from app.core.exceptions import AppError, UnauthorizedError, ForbiddenError
 from app.core.security import decode_access_token
 from app.models import User, UserRole
 from app.repositories.auth import AuthRepository
@@ -26,17 +26,21 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     payload = decode_access_token(token)
     user_id = payload.get("sub")
     if user_id is None:
-        raise invalid_token_error()
+        raise UnauthorizedError("Could not validate credentials", code="INVALID_TOKEN")
     try:
         user = AuthRepository(db).get_user_by_id(int(user_id))
     except (TypeError, ValueError) as exc:
-        raise invalid_token_error() from exc
+        raise UnauthorizedError("Could not validate credentials", code="INVALID_TOKEN") from exc
     if not user:
         raise UnauthorizedError("User not found", code="USER_NOT_FOUND")
     if not user.is_active:
         raise UnauthorizedError("Inactive user", code="INACTIVE_USER")
     return user
 
+
+# ============================================================================
+# Role-Based Dependencies
+# ============================================================================
 
 def _role_value(role: str | UserRole | Enum) -> str:
     if isinstance(role, UserRole):
@@ -61,6 +65,12 @@ def require_roles(*roles: str | UserRole | Enum) -> Callable[[User], User]:
     return require_role(*roles)
 
 
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role != UserRole.admin:
+        raise ForbiddenError("Admin access required")
+    return current_user
+
+
 def require_admin_or_front_desk(current_user: User = Depends(require_role(UserRole.admin, UserRole.front_desk))) -> User:
     return current_user
 
@@ -75,3 +85,24 @@ def require_provider(current_user: User = Depends(require_role(UserRole.provider
 
 def require_patient(current_user: User = Depends(require_role(UserRole.patient))) -> User:
     return current_user
+
+
+# ============================================================================
+# Permission-Based Dependencies
+# ============================================================================
+
+def require_permission(permission):
+    """
+    FastAPI dependency for coarse-grained permission check.
+    
+    Usage:
+        @app.get("/endpoint")
+        def endpoint(current_user: User = Depends(require_permission(Permission.PATIENT_READ))):
+            # User is already authorized with required permission
+            # Fine-grained checks happen inline in endpoint
+    """
+    def dependency(current_user: User = Depends(get_current_user)) -> User:
+        from app.core.authorization.service import check_permission
+        check_permission(current_user, permission)
+        return current_user
+    return dependency

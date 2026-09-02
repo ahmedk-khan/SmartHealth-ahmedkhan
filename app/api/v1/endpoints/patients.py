@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
-from app.core.authorization import require_permission, authorize, Permission
+from app.core.authorization import require_permission, Permission, PatientOwnershipGuard
 from app.core.dependencies import get_db
 from app.core.exceptions import (
     AppError,
@@ -53,7 +53,7 @@ def read_patient(patient_id: int, db: Session = Depends(get_db), current_user: U
     patient = repository.get_by_id_or_user_id(patient_id)
     if not patient:
         raise PatientNotFoundError()
-    authorize(current_user, Permission.PATIENT_READ, patient)
+    PatientOwnershipGuard(current_user, patient).enforce()
     return patient
 
 
@@ -68,7 +68,7 @@ def update_patient(
     patient = repository.get_by_id_or_user_id(patient_id)
     if not patient:
         raise PatientNotFoundError()
-    authorize(current_user, Permission.PATIENT_UPDATE, patient)
+    PatientOwnershipGuard(current_user, patient).enforce()
     return repository.update_profile(patient, payload.first_name, payload.last_name)
 
 
@@ -82,7 +82,7 @@ def delete_patient(
     patient = repository.get_by_id_or_user_id(patient_id)
     if not patient:
         raise PatientNotFoundError()
-    authorize(current_user, Permission.PATIENT_DELETE, patient)
+    PatientOwnershipGuard(current_user, patient).enforce()
     if patient.appointments:
         raise ConflictError(
             "Profiles with appointment history cannot be deleted",

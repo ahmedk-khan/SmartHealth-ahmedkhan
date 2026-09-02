@@ -2,7 +2,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import app_error, conflict_error, ValidationError
+from app.core.exceptions import AppError, ConflictError, ValidationError
 from app.models import Appointment, Billing, BillingStatus
 from app.repositories.appointments import AppointmentRepository
 from app.repositories.billing import BillingRepository
@@ -20,13 +20,13 @@ class BillingChecker:
             return existing
         amount = appointment.service.price
         if amount is None:
-            raise app_error("Appointment service price is unavailable", status_code=422, error_type="service_price_unavailable")
+            raise AppError("Appointment service price is unavailable", status_code=422, error_type="service_price_unavailable", code="SERVICE_PRICE_UNAVAILABLE")
         if force_failure is None:
             force_failure = settings.billing_force_failure
         if force_failure:
             billing = Billing(appointment_id=appointment.id, amount=amount, status=BillingStatus.DECLINED)
             self.billing.add_and_commit(billing)
-            raise conflict_error("Billing pre-check declined")
+            raise ConflictError("Billing pre-check declined", code="BILLING_PRECHECK_DECLINED")
         billing = Billing(appointment_id=appointment.id, amount=amount, status=BillingStatus.APPROVED)
         return self.billing.add_and_refresh(billing)
 

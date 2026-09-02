@@ -1,6 +1,6 @@
 # SmartHealth
 
-SmartHealth is a healthcare scheduling and operations platform built with FastAPI. It enables patient booking workflows, provider/service management, department organization, appointment lifecycle tracking, and operational observability in a single backend system.
+SmartHealth is a FastAPI backend for healthcare scheduling and clinic operations. It supports patient booking, provider and service management, appointment lifecycle tracking, and operational observability.
 
 ## Overview
 
@@ -10,9 +10,14 @@ The platform includes:
 - patient, provider, department, and service management
 - slot publishing and reservation workflows
 - appointment creation, rescheduling, cancellation, and visit tracking
-- billing pre-check support
+- billing pre-check support (mock implementation)
 - asynchronous workflow processing through Temporal and Celery
 - structured logging, correlation IDs, and Prometheus metrics
+- appointment reminder tracking and scheduling (database-only; external delivery out of scope)
+- healthcare assistant with LLM-powered responses and safety checks
+- audit trail and observability across all operations
+
+See [Scope and Limitations](#scope-and-limitations) for functionality that is intentionally outside the project scope.
 
 ## Core capabilities
 
@@ -63,13 +68,13 @@ flowchart LR
 
 ## Quick start
 
-### 1. Start the complete demo
+### 1. Start the local environment
 
 ```bash
 docker compose up --build
 ```
 
-This starts PostgreSQL, Redis, Kafka, Temporal, the API, Celery, the Temporal worker, and the analytics consumer. The API container applies migrations and seeds the demo accounts before serving traffic. Open `http://localhost:8000/docs` to run the flows.
+This starts PostgreSQL, Redis, Kafka, Temporal, the API, Celery, the Temporal worker, and the analytics consumer. The API container applies migrations before serving traffic. Open `http://localhost:8000/docs` to inspect the API.
 
 To run the application manually instead, continue with the steps below.
 
@@ -161,7 +166,7 @@ The assistant provides intelligent, safety-checked responses to patient and staf
   - Prometheus-formatted metrics endpoint
 
 - `GET /docs`
-  - Swagger UI for API inspection and manual testing
+  - Swagger UI for API inspection
 
 ### Core domain APIs
 
@@ -251,12 +256,57 @@ The platform includes:
 - Prometheus metrics endpoint and counters
 - task execution monitoring
 
+## Scope and Limitations
+
+### Included
+
+The platform provides a complete healthcare scheduling backend with:
+
+- **Appointment workflows:** Full booking, rescheduling, cancellation, and visit tracking
+- **Reminder scheduling:** Celery Beat enqueues reminders every 15 minutes; database tracks notification state (PENDING → SENT → CANCELLED)
+- **Multi-step orchestration:** Temporal workflows handle complex sagas (booking, service publishing)
+- **Event streaming:** Kafka-based event publishing with PHI sanitization
+- **AI assistant:** LLM-powered responses with medical advice refusal and PHI scoping
+- **Content generation:** LLM-based appointment summaries and follow-up drafts
+- **Authorization:** Role-based and resource ownership guards
+- **Idempotency:** Redis-backed duplicate detection for safe retries
+- **Observability:** Structured JSON logs, correlation tracing, Prometheus metrics
+
+### Out of Scope
+
+The following are **explicitly out of scope** and intentionally not implemented:
+
+| Feature | Reason | Notes |
+|---------|--------|-------|
+| **Real email/SMS delivery** | Out of scope | Reminders tracked in DB (PENDING → SENT) but not sent to external providers. No SMTP, SendGrid, Twilio, or similar. |
+| **Real payment processing** | Out of scope | Billing pre-check is a mock that approves/fails based on configuration. No real payment gateway integration. |
+| **Calendar sync** | Out of scope | No Google Calendar, Outlook, or iCalendar integration. Appointments are local only. |
+| **Document parsing** | Out of scope | No PDF/image scanning or OCR. All operational content is text-based. |
+| **Multi-clinic tenancy** | Out of scope | Single clinic scope only. No cross-facility inventory or schedule synchronization. |
+| **Clinical records (EHR)** | Out of scope | No electronic health record storage or medical record management. |
+| **Provider time-off** | Out of scope | No provider unavailability, vacation scheduling, or time-off rules. |
+| **Production secrets** | Out of scope | Secrets are hardcoded for demo. Use a vault (HashiCorp Vault, AWS Secrets Manager) in production. |
+
+For full scope details, see Section 7 (Out of Scope) in [docs/prd.md](docs/prd.md).
+
+### Notification System
+
+Appointment reminders are scheduled via Celery Beat every 15 minutes and tracked in the database. The current implementation:
+
+- Creates notifications when appointments are booked.
+- Enqueues reminders every 15 minutes for confirmed appointments within 24 hours.
+- Marks notifications as sent in the database.
+- Provides `/api/v1/notifications` for status queries.
+- Does not send email or SMS notifications.
+
+For notification design details, see [docs/design.md](docs/design.md).
+
 ## Seed data
 
 Use the application seed script to populate sample records for local development:
 
 ```bash
-docker compose run --rm api python -m app.seed
+docker compose run --rm api python scripts/seed.py
 ```
 
 Sample accounts include:
@@ -273,7 +323,7 @@ Run the test suite with no external dependencies:
 pytest -q
 ```
 
-### Test coverage
+### Test suites
 
 The test suite includes:
 
@@ -290,9 +340,9 @@ The test suite includes:
   - Docker infrastructure validation
   - Assistant API end-to-end flows
 
-- **Demo tasks** (tests/demo_tasks/):
-  - Temporal workflow demonstrations
-  - Race condition and concurrency tests
+- **Workflow and concurrency tasks** (tests/demo_tasks/):
+  - Temporal workflow exercises
+  - Race-condition and concurrency tests
 
 ### FakeLLM for offline testing
 
@@ -304,7 +354,7 @@ Tests use a deterministic FakeLLM implementation that requires no network access
 - Availability checking
 - General service navigation
 
-This ensures the full test suite passes in isolated environments without external dependencies.
+This allows the AI test suite to run in isolated environments without external dependencies.
 
 ### Running specific test suites
 
@@ -322,19 +372,9 @@ pytest tests/unit/test_ai_layer_comprehensive.py -v
 pytest tests/unit/test_assistant_safety.py -v
 ```
 
-### Baseline test status
-
-The project maintains a baseline of known test results in `test_baseline.txt`. Run the full suite and compare:
-
-```bash
-pytest --tb=short > current_results.txt
-diff test_baseline.txt current_results.txt
-```
-
 Common development commands are also available through the `Makefile`:
 
 ```bash
-make demo
 make test
 make lint
 ```
@@ -343,16 +383,16 @@ The Temporal entrypoint is `python -m app.workers.temporal.worker`; all workflow
 
 ## Documentation index
 
+- [docs/prd.md](docs/prd.md) — product requirements, success criteria, and scope limitations
 - [docs/design.md](docs/design.md) — system design and domain model overview
 - [docs/STRUCTURED_LOGGING.md](docs/STRUCTURED_LOGGING.md) — structured logging and correlation tracing
 - [docs/events.md](docs/events.md) — event contracts and integration patterns
 - [docs/runbook.md](docs/runbook.md) — operational start-up and incident response guidance
-- [docs/prd.md](docs/prd.md) — demo requirements and success criteria
 - [docs/diagrams/architecture.md](docs/diagrams/architecture.md) — architecture diagram
 
-## Notes
+## Project Notes
 
-- configuration is managed through environment variables and `.env`
-- authenticated API routes are versioned under `/api/v1`
-- public catalog endpoints are intentionally separated from authenticated operational routes
-- the API and service layers are designed to remain testable, traceable, and maintainable in an enterprise environment
+- Configuration is managed through environment variables and `.env`.
+- Authenticated API routes are versioned under `/api/v1`.
+- Public catalog endpoints are separated from authenticated operational routes.
+- Reminder notifications are tracked in the database; external delivery is out of scope.

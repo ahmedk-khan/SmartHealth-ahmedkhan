@@ -19,7 +19,7 @@ from typing import Optional
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import app_error
+from app.core.exceptions import AppError
 from app.core.settings import settings
 from app.models import ContentChunk, Service
 from app.repositories import ContentChunkRepository
@@ -68,10 +68,11 @@ class HybridSearchService:
         min_sim = min_similarity or settings.retrieval_min_similarity
         norm_weight = vector_weight + keyword_weight
         if norm_weight <= 0:
-            raise app_error(
+            raise AppError(
                 "Invalid search weights: sum must be > 0",
                 status_code=400,
                 error_type="invalid_search_weights",
+                code="INVALID_SEARCH_WEIGHTS",
             )
 
         # Normalize weights to sum to 1.0
@@ -144,20 +145,22 @@ class HybridSearchService:
             query_embedding = (await generate_embeddings([query]))[0]
         except Exception as exc:
             logger.exception("Failed to generate query embedding", extra={"query": query})
-            raise app_error(
+            raise AppError(
                 "Search embedding generation failed",
                 status_code=503,
                 error_type="embedding_generation_failed",
+                code="EMBEDDING_GENERATION_FAILED",
             ) from exc
 
         try:
             candidates = self.chunk_repo.search_candidates(query_embedding, limit)
         except Exception as exc:
             logger.exception("Vector search failed", extra={"query": query})
-            raise app_error(
+            raise AppError(
                 "Vector search is temporarily unavailable",
                 status_code=503,
                 error_type="search_unavailable",
+                code="SEARCH_UNAVAILABLE",
             ) from exc
 
         results = []

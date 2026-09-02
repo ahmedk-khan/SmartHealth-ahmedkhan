@@ -1,3 +1,4 @@
+from app.core.exceptions import ConflictError
 from app.models import Department
 from app.repositories.base import BaseRepository
 
@@ -11,7 +12,13 @@ class DepartmentRepository(BaseRepository):
         return self.db.query(Department).filter(Department.id == department_id).first()
 
     def create_department(self, name: str, description: str | None) -> Department:
-        department = Department(name=name, description=description)
+        normalized_name = (name or "").strip()
+        if not normalized_name:
+            raise ConflictError("Department name is required", code="DEPARTMENT_NAME_REQUIRED")
+        if self.get_by_name(normalized_name):
+            raise ConflictError("Department with this name already exists", code="DEPARTMENT_ALREADY_EXISTS")
+
+        department = Department(name=normalized_name, description=description)
         self.save_and_refresh(department)
         return department
 

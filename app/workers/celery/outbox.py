@@ -1,12 +1,16 @@
 import logging
 import json
 import datetime
+import asyncio
 
 from app.workers.celery_app import celery_app
 from app.db import SessionLocal
-from app.integrations.kafka_client import KafkaEventPublisher, KafkaProducerError
 from app.models import OutboxEvent
 from app.repositories import OutboxRepository
+from app.workers.kafka.exceptions import KafkaPublisherError
+from app.workers.kafka.producer import EventPublisher
+
+KafkaProducerError = KafkaPublisherError
 
 
 logger = logging.getLogger(__name__)
@@ -27,14 +31,17 @@ def publish_pending_events(self, limit: int = 100) -> dict[str, int]:
     try:
         repository = OutboxRepository(db)
         events = repository.list_pending(limit)
-        publisher = KafkaEventPublisher()
+        publisher = EventPublisher()
         for event in events:
             try:
-                publisher.publish_event(
-                    event_type=event.event_type,
-                    entity_type=event.entity_type,
-                    entity_id=event.entity_id,
-                    **event.payload,
+                # Run async publisher in event loop
+                asyncio.run(
+                    publisher.publish_event_async(
+                        event_type=event.event_type,
+                        entity_type=event.entity_type,
+                        entity_id=event.entity_id,
+                        **event.payload,
+                    )
                 )
                 repository.mark_published(event, datetime.datetime.now(datetime.timezone.utc))
                 published += 1

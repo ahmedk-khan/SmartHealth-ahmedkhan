@@ -11,13 +11,14 @@ Generated content is saved with prompt version for reproducibility.
 """
 
 import json
+import asyncio
 from datetime import datetime, date
 from typing import Optional
 
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import app_error
+from app.core.exceptions import AppError
 from app.core.logging import get_correlation_id
 from app.core.settings import settings
 from app.models import User, Appointment, GeneratedContent, AnalyticsDaily, UserRole
@@ -65,56 +66,50 @@ class CommunicationService:
         Returns: (AppointmentSummary, GeneratedContentMetadata)
         """
         # Fetch appointment with all related data
-        appointment = self.db.query(Appointment).filter(
-            Appointment.id == appointment_id
-        ).first()
+        appointment = await asyncio.to_thread(
+            lambda: self.db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        )
         
         if not appointment:
-            raise app_error(
+            raise AppError(
                 f"Appointment {appointment_id} not found",
                 status_code=404,
-                error_type="not_found"
+                error_type="not_found",
+                code="APPOINTMENT_NOT_FOUND",
             )
         
         # Auth check: current user can only generate summaries for their own appointments
         # or if staff/admin
         if not self._user_can_access_appointment(current_user, appointment):
-            raise app_error(
+            raise AppError(
                 "Unauthorized access to appointment",
                 status_code=403,
-                error_type="forbidden"
+                error_type="forbidden",
+                code="FORBIDDEN",
             )
         
         # Extract real data from database
-        provider_name = appointment.provider.user.first_name + " " + appointment.provider.user.last_name
+        provider_name = self._display_name(appointment.provider.user, "Provider")
         service_name = appointment.service.name
         slot = appointment.slot
-        appointment_date = slot.date.strftime("%B %d, %Y") if slot else "TBD"
-        appointment_time = slot.start_time.strftime("%H:%M") if slot and slot.start_time else "TBD"
-        location = appointment.service.location or "Clinic"
+        appointment_date = slot.start_datetime.strftime("%B %d, %Y") if slot else "TBD"
+        appointment_time = slot.start_datetime.strftime("%H:%M UTC") if slot else "TBD"
+        location = "Clinic"
         
         # Build prompt with real data (grounding)
         prompt_data = {
-            "provider_name": "[PROVIDER]",
-            "service_name": "[SERVICE]",
-            "appointment_date": "[APPOINTMENT_DATE]",
-            "appointment_time": "[APPOINTMENT_TIME]",
-            "location": "[LOCATION]",
-            "service_description": "[SERVICE_DESCRIPTION]",
+            "provider_name": provider_name,
+            "service_name": service_name,
+            "appointment_date": appointment_date,
+            "appointment_time": appointment_time,
+            "location": location,
+            "service_description": appointment.service.description or "",
         }
         
         prompt = self._build_summary_prompt(prompt_data, include_instructions, include_cancellation_policy)
         
         # Call LLM
         summary_text = await self.provider.complete(prompt)
-        summary_text = self._restore_prompt_tokens(summary_text, {
-            "[PROVIDER]": provider_name,
-            "[SERVICE]": service_name,
-            "[APPOINTMENT_DATE]": appointment_date,
-            "[APPOINTMENT_TIME]": appointment_time,
-            "[LOCATION]": location,
-            "[SERVICE_DESCRIPTION]": appointment.service.description or "",
-        })
         self._validate_generated_text(summary_text)
         
         # Extract pre-visit instructions if requested
@@ -170,38 +165,40 @@ class CommunicationService:
         Returns: (AppointmentFollowup, GeneratedContentMetadata)
         """
         # Fetch appointment
-        appointment = self.db.query(Appointment).filter(
-            Appointment.id == appointment_id
-        ).first()
+        appointment = await asyncio.to_thread(
+            lambda: self.db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        )
         
         if not appointment:
-            raise app_error(
+            raise AppError(
                 f"Appointment {appointment_id} not found",
                 status_code=404,
-                error_type="not_found"
+                error_type="not_found",
+                code="APPOINTMENT_NOT_FOUND",
             )
         
         # Auth check: staff/admin only
         if not self._user_is_staff(current_user):
-            raise app_error(
+            raise AppError(
                 "Only staff can generate follow-ups",
                 status_code=403,
-                error_type="forbidden"
+                error_type="forbidden",
+                code="FORBIDDEN",
             )
         
         # Extract real data
-        provider_name = appointment.provider.user.first_name + " " + appointment.provider.user.last_name
+        provider_name = self._display_name(appointment.provider.user, "Provider")
         service_name = appointment.service.name
-        patient_name = appointment.patient.user.first_name
-        appointment_date = appointment.slot.date.strftime("%B %d, %Y") if appointment.slot else "N/A"
+        patient_name = self._display_name(appointment.patient, "Patient")
+        appointment_date = appointment.slot.start_datetime.strftime("%B %d, %Y") if appointment.slot else "N/A"
         visit_completed = appointment.visit is not None
         
         # Build prompt with real data
         prompt_data = {
-            "provider_name": "[PROVIDER]",
-            "service_name": "[SERVICE]",
-            "patient_name": "[PATIENT]",
-            "appointment_date": "[APPOINTMENT_DATE]",
+            "provider_name": provider_name,
+            "service_name": service_name,
+            "patient_name": patient_name,
+            "appointment_date": appointment_date,
             "visit_completed": visit_completed,
             "tone": tone,
         }
@@ -210,13 +207,6 @@ class CommunicationService:
         
         # Call LLM
         followup_text = await self.provider.complete(prompt)
-        followup_text = self._restore_prompt_tokens(followup_text, {
-            "[PROVIDER]": provider_name,
-            "[SERVICE]": service_name,
-            "[PATIENT]": patient_name,
-            "[APPOINTMENT_DATE]": appointment_date,
-        })
-        
         self._validate_generated_text(followup_text)
 
         # Parse response
@@ -265,16 +255,18 @@ class CommunicationService:
         """
         # Auth check: front desk and admin can generate utilisation reports
         if not self._user_is_staff(current_user):
-            raise app_error(
+            raise AppError(
                 "Only front desk or admin can generate utilisation reports",
                 status_code=403,
-                error_type="forbidden"
+                error_type="forbidden",
+                code="FORBIDDEN",
             )
         
         # Fetch real analytics data
-        values = self.analytics.dashboard_rollup_metrics(
+        values = await asyncio.to_thread(
+            self.analytics.dashboard_rollup_metrics,
             period_start.isoformat(),
-            period_end.isoformat()
+            period_end.isoformat(),
         )
         
         if values is None:
@@ -313,6 +305,17 @@ class CommunicationService:
     # ─────────────────────────────────────────────────────────────
     # Helper Methods
     # ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _display_name(entity, fallback: str) -> str:
+        """Return the model's available display name without exposing email addresses."""
+        full_name = getattr(entity, "full_name", None)
+        if full_name:
+            return full_name.strip()
+        first_name = getattr(entity, "first_name", None) or ""
+        last_name = getattr(entity, "last_name", None) or ""
+        name = f"{first_name} {last_name}".strip()
+        return name or fallback
     
     async def _save_generated_content(
         self,
@@ -376,17 +379,18 @@ Create a clear, warm, and professional summary that:
     def _validate_generated_text(self, text: str) -> str:
         cleaned = text.strip()
         if not cleaned or len(cleaned) > MAX_GENERATED_TEXT_LENGTH:
-            raise app_error("Generated content failed length validation", status_code=502, error_type="generated_content_invalid")
+            raise AppError("Generated content failed length validation", status_code=502, error_type="generated_content_invalid", code="GENERATED_CONTENT_INVALID")
         lowered = cleaned.casefold()
         if any(term in lowered for term in UNSAFE_GENERATED_TERMS):
-            raise app_error("Generated content failed safety validation", status_code=502, error_type="generated_content_unsafe")
+            raise AppError("Generated content failed safety validation", status_code=502, error_type="generated_content_unsafe", code="GENERATED_CONTENT_UNSAFE")
         return cleaned
 
     def _restore_prompt_tokens(self, text: str, replacements: dict[str, str]) -> str:
+        """Restore legacy prompt tokens for callers that still use the helper."""
         for token, value in replacements.items():
             text = text.replace(token, value)
         return text
-    
+
     def _build_followup_prompt(self, data: dict, include_next_steps: bool) -> str:
         """Build prompt for follow-up communication generation."""
         prompt = f"""You are a healthcare communication specialist.

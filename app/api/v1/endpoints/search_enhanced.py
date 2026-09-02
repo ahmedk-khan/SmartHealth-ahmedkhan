@@ -8,14 +8,16 @@ Features:
 - Empty result as valid "we don't offer" outcome
 """
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
+from app.core.ai_controls import AIRedisStore, get_ai_redis_store
 from app.core.settings import settings
 from app.models import User, UserRole
 from app.schemas.search import SearchRequest, SearchResponse, SearchResult
@@ -41,6 +43,7 @@ async def search_services_endpoint(
     payload: SearchRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ai_store: AIRedisStore = Depends(get_ai_redis_store),
     min_similarity: float = Query(
         default=None,
         ge=0.0,
@@ -48,18 +51,9 @@ async def search_services_endpoint(
         description="Minimum similarity threshold (0.0-1.0). Results below this are discarded. Default from settings.",
     ),
 ):
-    """
-    Search published services.
-    
-    Args:
-        payload: SearchRequest with query and limit
-        db: Database session
-        current_user: Authenticated user (for PHI scoping)
-        min_similarity: Optional override for minimum similarity threshold
-    
-    Returns:
-        SearchResponse with results and optional patient context
-    """
+    """Search published services and stream grounded results."""
+    if not await ai_store.allow_request(current_user.id):
+        raise HTTPException(status_code=429, detail="AI request rate limit exceeded")
     # Use provided threshold or default from settings
     threshold = min_similarity if min_similarity is not None else settings.retrieval_min_similarity
     limit = min(payload.limit, settings.retrieval_top_k)
@@ -76,7 +70,7 @@ async def search_services_endpoint(
     # Get patient context (if authenticated as patient)
     patient_context = None
     if current_user.role == UserRole.patient:
-        patient_context = get_patient_context(db, current_user)
+        patient_context = await asyncio.to_thread(get_patient_context, db, current_user)
     
     response = {
         "query": payload.query,
@@ -97,16 +91,3 @@ async def search_services_endpoint(
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-@router.get(
-    "/search/config",
-    summary="Get current search configuration",
-    description="Returns current search configuration (k, min_similarity, etc.)",
-)
-async def get_search_config():
-    """Return current search configuration."""
-    return {
-        "retrieval_top_k": settings.retrieval_top_k,
-        "retrieval_min_similarity": settings.retrieval_min_similarity,
-        "embedding_dimensions": settings.embedding_dimensions,
-        "embedding_model": settings.embedding_model,
-    }

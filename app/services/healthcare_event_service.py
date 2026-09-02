@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import logging
 from uuid import uuid4
+
 from sqlalchemy.orm import Session
-from app.integrations.kafka_client import KafkaEventPublisher, KafkaProducerError
+
 from app.core.logging import get_correlation_id, get_request_id
-from app.repositories.outbox import OutboxRepository
 from app.models.outbox import OutboxEvent
+from app.repositories.outbox import OutboxRepository
+from app.workers.kafka.exceptions import KafkaPublisherError
+from app.workers.kafka.producer import EventPublisher
+
+KafkaProducerError = KafkaPublisherError
 
 
 logger = logging.getLogger(__name__)
@@ -20,9 +25,9 @@ class HealthcareEventService:
     ensuring end-to-end traceability across the system.
     """
     
-    def __init__(self, db: Session, publisher: KafkaEventPublisher | None = None) -> None:
+    def __init__(self, db: Session, publisher: EventPublisher | None = None) -> None:
         self.outbox = OutboxRepository(db)
-        self.publisher = publisher or KafkaEventPublisher()
+        self.publisher = publisher or EventPublisher()
 
     def _save_outbox(self, event_type: str, entity_type: str, entity_id: int, payload: dict[str, object], error: str) -> None:
         try:
@@ -133,6 +138,106 @@ class HealthcareEventService:
         
         return result
 
+    async def publish_appointment_event_async(
+        self,
+        event_type: str,
+        *,
+        appointment_id: int,
+        patient_id: int | None = None,
+        provider_id: int | None = None,
+        service_id: int | None = None,
+        slot_id: int | None = None,
+        status: str | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> dict[str, object]:
+        """Publish appointment events from async workflow activities."""
+        resolved_correlation_id = correlation_id or get_correlation_id()
+        resolved_request_id = request_id or get_request_id()
+        event_id = str(uuid4())
+        metadata = {
+            "appointment_id": appointment_id,
+            "patient_id": patient_id,
+            "provider_id": provider_id,
+            "service_id": service_id,
+            "slot_id": slot_id,
+            "status": status,
+            "request_id": resolved_request_id,
+            "correlation_id": resolved_correlation_id,
+            "event_id": event_id,
+        }
+
+        try:
+            result = await self.publisher.publish_event_async(
+                event_type=event_type,
+                entity_type="appointment",
+                entity_id=appointment_id,
+                **metadata,
+            )
+        except KafkaProducerError as exc:
+            logger.error("Appointment event delivery failed after commit: %s", exc, extra={"event_type": event_type, "appointment_id": appointment_id})
+            self._save_outbox(event_type, "appointment", appointment_id, metadata, str(exc))
+            return {"status": "delivery_failed", "event_type": event_type, "entity_id": str(appointment_id)}
+
+        logger.info(
+            f"Appointment event published: {event_type}",
+            extra={
+                "event_type": event_type,
+                "entity_type": "appointment",
+                "appointment_id": appointment_id,
+                "correlation_id": resolved_correlation_id,
+                "request_id": resolved_request_id,
+            },
+        )
+        return result
+
+    async def publish_service_event_async(
+        self,
+        event_type: str,
+        *,
+        service_id: int,
+        department_id: int | None = None,
+        status: str | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> dict[str, object]:
+        """Async service event publisher for Temporal and other async callers."""
+        resolved_correlation_id = correlation_id or get_correlation_id()
+        resolved_request_id = request_id or get_request_id()
+
+        metadata = {
+            "service_id": service_id,
+            "department_id": department_id,
+            "status": status,
+            "request_id": resolved_request_id,
+            "correlation_id": resolved_correlation_id,
+        }
+
+        try:
+            result = await self.publisher.publish_event_async(
+                event_type=event_type,
+                entity_type="service",
+                entity_id=service_id,
+                **metadata,
+            )
+        except KafkaProducerError as exc:
+            logger.error("Service event delivery failed after commit: %s", exc, extra={"event_type": event_type, "service_id": service_id})
+            self._save_outbox(event_type, "service", service_id, metadata, str(exc))
+            return {"status": "delivery_failed", "event_type": event_type, "entity_id": str(service_id)}
+
+        logger.info(
+            f"Service event published: {event_type}",
+            extra={
+                "event_type": event_type,
+                "entity_type": "service",
+                "service_id": service_id,
+                "correlation_id": resolved_correlation_id,
+                "request_id": resolved_request_id,
+            }
+        )
+
+        return result
+
     def publish_service_event(
         self,
         event_type: str,
@@ -157,7 +262,6 @@ class HealthcareEventService:
         Returns:
             Dictionary containing event publication result
         """
-        # Auto-capture from context if not explicitly provided
         resolved_correlation_id = correlation_id or get_correlation_id()
         resolved_request_id = request_id or get_request_id()
         

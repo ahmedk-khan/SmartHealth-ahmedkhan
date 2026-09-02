@@ -168,7 +168,7 @@ async def publish_service_published_event(payload: dict[str, Any]) -> dict[str, 
         service_repository.mark_published(service, commit=False)
         from app.services.healthcare_event_service import HealthcareEventService
 
-        HealthcareEventService(db).publish_service_event(
+        await HealthcareEventService(db).publish_service_event_async(
             "service.published",
             service_id=service.id,
             department_id=service.department_id,

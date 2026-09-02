@@ -1,5 +1,4 @@
-from app.core.exceptions import app_error, invalid_token_error, ForbiddenError
-from app.core.settings import settings
+from app.core.exceptions import AppError, ForbiddenError, UnauthorizedError
 from app.core.metrics import record_login_attempt, record_user_registration
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.repositories import AuthRepository
@@ -18,20 +17,20 @@ class AuthService(BaseService):
         """Register a new user with logging and metrics."""
         self.log_info("User registration attempt", operation="register", data={"email": "[REDACTED]"})
 
-        if user_in.role == UserRole.admin and not settings.allow_self_service_admin_registration:
+        if user_in.role in {UserRole.admin, UserRole.front_desk}:
             self.log_warning(
-                "Registration failed: admin self-service is disabled",
+                "Registration failed: privileged role requires an administrator",
                 operation="register",
                 data={"role": user_in.role},
             )
             raise ForbiddenError(
-                "Admin registration is disabled. An existing admin must create the account."
+                "This role cannot be created through public registration."
             )
 
         existing = self.repository.get_user_by_email(user_in.email)
         if existing:
             self.log_warning("Registration failed: email already exists", operation="register", data={"existing": True})
-            raise app_error("Email already registered", status_code=400, error_type="user_exists")
+            raise AppError("Email already registered", status_code=400, error_type="user_exists", code="USER_EXISTS")
         
         user = self.repository.create_user(
             email=user_in.email,
@@ -51,6 +50,25 @@ class AuthService(BaseService):
         
         return UserRead.model_validate(user)
 
+    def register_front_desk(self, user_in: UserCreate) -> UserRead:
+        """Create a front-desk account through an administrator-only endpoint."""
+        existing = self.repository.get_user_by_email(user_in.email)
+        if existing:
+            raise AppError("Email already registered", status_code=400, error_type="user_exists", code="USER_EXISTS")
+
+        user = self.repository.create_user(
+            email=user_in.email,
+            hashed_password=get_password_hash(user_in.password),
+            role=UserRole.front_desk,
+            first_name=user_in.first_name,
+            last_name=user_in.last_name,
+        )
+        try:
+            record_user_registration(role=user.role)
+        except Exception as exc:
+            self.log_error("Failed to record registration metric", operation="register_front_desk", data={"error": str(exc)})
+        return UserRead.model_validate(user)
+
     def login(self, user_in: UserLogin) -> Token:
         """Authenticate user with logging and metrics."""
         self.log_info("Login attempt", operation="login", data={"email": "[REDACTED]"})
@@ -65,7 +83,7 @@ class AuthService(BaseService):
             except Exception as exc:
                 self.log_error("Failed to record login failure metric", operation="login", data={"error": str(exc)})
             
-            raise invalid_token_error("Incorrect email or password")
+            raise UnauthorizedError("Incorrect email or password", code="INVALID_TOKEN")
 
         access_token = create_access_token(subject=str(user.id))
         

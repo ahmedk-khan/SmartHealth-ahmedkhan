@@ -71,7 +71,7 @@ class ServiceBase(BaseModel):
 
 
 class ServiceCreate(ServiceBase):
-    pass
+    provider_id: Optional[int] = None
 
 
 class ServiceRead(ServiceBase):

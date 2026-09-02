@@ -4,6 +4,46 @@
 
 The AI assistant provides intelligent, safety-checked answers to healthcare-related questions while protecting patient privacy and preventing harmful medical advice.
 
+### Endpoint Access Matrix
+
+| Endpoint | Patient | Provider | Front desk | Admin |
+| --- | --- | --- | --- | --- |
+| `POST /assistant/ask` | Yes, own appointments only | Yes, own provider scope | Yes | Yes |
+| `POST /search` | Yes, published services only | Yes | Yes | Yes |
+| `POST /api/v1/appointments/{id}/generate/summary` | No | No | Yes | Yes |
+| `POST /api/v1/appointments/{id}/generate/followup` | No | No | Yes | Yes |
+| `POST /api/v1/reports/generate/utilisation` | No | No | Yes | Yes |
+| `POST /api/v1/reports/generate/utilisation/async` | No | No | Yes | Yes |
+| `GET /api/v1/tasks/{task_id}` | No | No | Yes, own task | Yes, own task |
+| `GET /api/v1/analytics/ai` | No | No | Yes | Yes |
+
+Authentication is required for all AI routes, and generation/report routes use
+the `ANALYTICS_READ` or staff-only permission boundary. Patient appointment
+answers are filtered by the authenticated patient; provider appointment answers
+are limited to appointments associated with that provider.
+
+### Business Users and Workflows
+
+These endpoints are backend capabilities normally called by the web application,
+not routes that every user is expected to call directly:
+
+| Business need | Endpoint | Primary users | Practical use |
+| --- | --- | --- | --- |
+| Patient self-service | `POST /assistant/ask` | Patient, provider, staff | Find offered services, preparation information, availability, or the caller's own appointments. |
+| Service discovery | `POST /search` | Patient, provider, staff | Search the published service catalog when the UI needs matching services and citations. |
+| Visit communication | `POST /api/v1/appointments/{id}/generate/summary` | Front desk, admin | Prepare a patient-facing appointment summary or confirmation message. |
+| Follow-up communication | `POST /api/v1/appointments/{id}/generate/followup` | Front desk, admin | Draft a post-visit or appointment follow-up message. |
+| Operational reporting | `POST /api/v1/reports/generate/utilisation` | Front desk, admin | Generate a utilization report for a selected date range immediately. |
+| Long reports | `POST /api/v1/reports/generate/utilisation/async` | Front desk, admin | Queue a report when generation may take longer; poll the returned task ID. |
+| Report status | `GET /api/v1/tasks/{task_id}` | Front desk, admin | Retrieve a queued report owned by the requesting staff user. |
+| Operational dashboard | `GET /api/v1/analytics/summary` | Front desk, admin | View booking, visit, cancellation, and utilization metrics. |
+| AI monitoring | `GET /api/v1/analytics/ai` | Front desk, admin | Monitor assistant request, refusal, latency, and cache metrics. |
+
+Providers use the normal appointment, slot, and visit endpoints to manage care
+operations. They can use the assistant for their own provider-scoped appointment
+questions, but generated appointment summaries, follow-ups, utilization reports,
+and analytics are intentionally restricted to front-desk and admin staff.
+
 ### Safety Architecture
 
 All user questions pass through a **SafetyService** that:
@@ -58,7 +98,7 @@ event: done
 data: null
 ```
 
-For navigation queries, Redis caches complete answers using SHA-256(normalized_question) as the key with TTL `AI_CACHE_TTL_SECONDS`. Subsequent identical questions hit the cache immediately, reducing LLM calls and cost.
+For navigation queries, Redis caches complete answers using a SHA-256 key built from the normalized question, authenticated user scope, model identifier, and prompt version, with TTL `AI_CACHE_TTL_SECONDS`. Service-listing queries bypass the cache so catalog changes are reflected immediately.
 
 ### Error Handling and Timeouts
 

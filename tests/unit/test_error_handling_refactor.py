@@ -2,7 +2,7 @@ import pytest
 from fastapi import FastAPI, Depends, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 import logging
 import uuid
 
@@ -67,6 +67,11 @@ def route_external():
 @app.get("/error/database")
 def route_database():
     raise SQLAlchemyError("SELECT * FROM sensitive_table; Column admin_pwd does not exist")
+
+
+@app.get("/error/integrity")
+def route_integrity():
+    raise IntegrityError("INSERT INTO departments (name) VALUES ('Cardiology')", {}, Exception("duplicate key value violates unique constraint"))
 
 
 @app.get("/error/unexpected")
@@ -153,6 +158,19 @@ def test_database_exception_masking(caplog):
     # Assert server logs contain the real database error and details
     assert "Database exception occurred" in caplog.text
     assert "sensitive_table" in caplog.text
+
+
+def test_integrity_error_returns_conflict(caplog):
+    with caplog.at_level(logging.ERROR):
+        response = client.get("/error/integrity")
+
+    assert response.status_code == 409
+    err = response.json()["error"]
+    assert err["type"] == "conflict"
+    assert err["message"] == "Resource already exists"
+    assert err["code"] == "RESOURCE_ALREADY_EXISTS"
+    assert "request_id" in err
+    assert "duplicate key value violates unique constraint" in caplog.text
 
 
 def test_unexpected_exception_masking(caplog):

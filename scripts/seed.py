@@ -42,6 +42,7 @@ def seed() -> None:
         admin = ensure_user("admin@example.com", "secret123", UserRole.admin)
         patient = ensure_user("patient@example.com", "secret123", UserRole.patient)
         provider_user = ensure_user("provider@example.com", "secret123", UserRole.provider)
+        front_desk = ensure_user("frontdesk@example.com", "secret123", UserRole.front_desk)
         demo_admin = ensure_user("demo@gmail.com", "adminadmin", UserRole.admin)
 
         department = ensure_department("Cardiology", "Heart care")

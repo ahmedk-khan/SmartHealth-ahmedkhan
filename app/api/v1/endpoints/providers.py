@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db
-from app.core.authorization import require_permission, authorize, Permission
+from app.core.authorization import require_permission, Permission, ProviderOwnershipGuard
 from app.core.exceptions import (
     AppError,
     ForbiddenError,
@@ -63,7 +63,7 @@ def update_provider(provider_id: int, payload: ProviderUpdate, db: Session = Dep
     provider = _resolve_provider_for_current_user(repository, provider_id, current_user)
     if not provider:
         raise ProviderNotFoundError()
-    authorize(current_user, Permission.PROVIDER_UPDATE, provider)
+    ProviderOwnershipGuard(current_user, provider).enforce()
     if payload.department_id is not None and not DepartmentRepository(db).get_by_id(payload.department_id):
         raise DepartmentNotFoundError()
     return repository.update_profile(provider, payload.model_dump(exclude_unset=True))
@@ -97,7 +97,7 @@ def provider_slots(provider_id: int, limit: int = Query(20, ge=1, le=100), offse
     provider = repository.get_by_id(provider_id)
     if not provider:
         raise ProviderNotFoundError()
-    authorize(current_user, Permission.SLOT_READ, provider, provider_repository=repository)
+    ProviderOwnershipGuard(current_user, provider).enforce()
     items, total = repository.list_slots(provider_id=provider_id, offset=offset, limit=limit)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -113,6 +113,6 @@ def provider_services(provider_id: int, limit: int = Query(20, ge=1, le=100), of
     provider = repository.get_by_id(provider_id)
     if not provider:
         raise ProviderNotFoundError()
-    authorize(current_user, Permission.SERVICE_READ, provider, provider_repository=repository)
+    ProviderOwnershipGuard(current_user, provider).enforce()
     items, total = repository.list_services(provider_id=provider_id, offset=offset, limit=limit)
     return {"items": items, "total": total, "limit": limit, "offset": offset}

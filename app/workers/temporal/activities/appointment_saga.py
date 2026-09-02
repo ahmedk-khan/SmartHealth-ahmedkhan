@@ -264,7 +264,7 @@ async def publish_appointment_created_event(appointment_data: dict[str, Any]) ->
     try:
         from app.services.healthcare_event_service import HealthcareEventService
 
-        return HealthcareEventService(db).publish_appointment_event(
+        return await HealthcareEventService(db).publish_appointment_event_async(
             "appointment.created",
             appointment_id=appointment_data["appointment_id"],
             patient_id=appointment_data.get("patient_id"),

@@ -7,6 +7,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Deploy to EC2 over SSH
         uses: appleboy/ssh-action@v1
@@ -14,17 +16,26 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: GH_TOKEN,EC2_ENV_FILE
+          env:
+            GH_TOKEN: ${{ github.token }}
+            EC2_ENV_FILE: ${{ secrets.EC2_ENV_FILE }}
           script: |
             set -e
+            AUTH_HEADER="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
             if [ -d "$HOME/app/.git" ]; then
               cd "$HOME/app"
-              git pull --ff-only origin main
+              git -c http.extraheader="$AUTH_HEADER" pull --ff-only origin main
             elif [ ! -e "$HOME/app" ]; then
-              git clone https://github.com/iahmedd-k/smarthealth.git "$HOME/app"
+              git -c http.extraheader="$AUTH_HEADER" clone https://github.com/iahmedd-k/smarthealth.git "$HOME/app"
               cd "$HOME/app"
             else
               echo "ERROR: $HOME/app exists but is not a Git checkout."
               exit 1
+            fi
+            if [ -n "${EC2_ENV_FILE:-}" ]; then
+              printf '%s\n' "$EC2_ENV_FILE" > .env
+              chmod 600 .env
             fi
             test -f .env || { echo "ERROR: $HOME/app/.env is missing."; exit 1; }
             docker compose down

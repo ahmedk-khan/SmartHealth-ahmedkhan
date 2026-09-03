@@ -424,3 +424,4 @@ The Temporal entrypoint is `python -m app.workers.temporal.worker`; all workflow
 - Authenticated API routes are versioned under `/api/v1`.
 - Public catalog endpoints are separated from authenticated operational routes.
 - Reminder notifications are tracked in the database; external delivery is out of scope.
+# smarthealth

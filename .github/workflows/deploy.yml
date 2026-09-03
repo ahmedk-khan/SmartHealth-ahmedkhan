@@ -17,9 +17,6 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           envs: GH_TOKEN,EC2_ENV_FILE
-          env:
-            GH_TOKEN: ${{ github.token }}
-            EC2_ENV_FILE: ${{ secrets.EC2_ENV_FILE }}
           script: |
             set -e
             AUTH_HEADER="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
@@ -40,3 +37,6 @@ jobs:
             test -f .env || { echo "ERROR: $HOME/app/.env is missing."; exit 1; }
             docker compose down
             docker compose up -d --build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EC2_ENV_FILE: ${{ secrets.EC2_ENV_FILE }}

@@ -24,12 +24,16 @@ async def validate_slot_activity(slot_id: int) -> dict[str, int | str]:
 
 @activity.defn
 async def reserve_slot_activity(input: ReservationInput) -> ReservationResult:
-    if input.slot_id <= 0 or input.user_id <= 0:
-        raise ValueError("slot_id and user_id must be positive")
+    if input.slot_id <= 0 or input.patient_id <= 0:
+        raise ValueError("slot_id and patient_id must be positive")
     async with get_session() as session:
         scheduling_repo = SchedulingRepository(session)
-        result = await SlotService(session).reserve_slot_async(scheduling_repo, input.slot_id, input.user_id)
-    return ReservationResult(result.get("slot_id"), result.get("user_id"), result.get("status"))
+        result = await SlotService(session).reserve_slot_async(
+            scheduling_repo,
+            input.slot_id,
+            input.patient_id,
+        )
+    return ReservationResult(result.get("slot_id"), result.get("patient_id"), result.get("status"))
 
 
 @activity.defn

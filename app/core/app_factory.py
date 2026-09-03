@@ -118,7 +118,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="SmartHealth API",
-        version="1.0.0",
+        version=settings.api_version,
         description=(
             "SmartHealth is a healthcare scheduling and operations API for patient, provider, "
             "appointment, and service workflows. The documented endpoints include authentication, "

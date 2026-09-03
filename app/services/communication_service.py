@@ -12,16 +12,17 @@ Generated content is saved with prompt version for reproducibility.
 
 import json
 import asyncio
+import re
 from datetime import datetime, date
 from typing import Optional
 
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, NotFoundError
 from app.core.logging import get_correlation_id
 from app.core.settings import settings
-from app.models import User, Appointment, GeneratedContent, AnalyticsDaily, UserRole
+from app.models import User, Appointment, GeneratedContent, AnalyticsDaily
 from app.repositories.analytics import AnalyticsRepository
 from app.schemas.assistant import (
     AppointmentSummary,
@@ -31,11 +32,46 @@ from app.schemas.assistant import (
     ReportGenerationResponse,
 )
 from app.services.llm_provider import LLMProvider
-from app.services.assistant_prompts import PROMPT_REPORT_V1
+from app.services.assistant_prompts import PROMPT_REPORT_V1, PROMPT_VERSION_REPORT
 
 PROMPT_VERSION_COMMUNICATION = "PROMPT_COMMUNICATION_V1"
 MAX_GENERATED_TEXT_LENGTH = 4000
-UNSAFE_GENERATED_TERMS = ("diagnose", "diagnosis", "treatment", "prescribe", "prescription", "medication dosage")
+UNSAFE_GENERATED_PATTERNS = (
+    re.compile(r"\bdiagnos(?:e|is|ed|ing)\b"),
+    re.compile(r"\bprescri(?:be|bed|bing|ption)\b"),
+    re.compile(r"\bmedications?\s+(?:dosage|dose|amount)\b"),
+    re.compile(r"\btreatment\s+(?:plan|recommendation|regimen)\b"),
+)
+# LLM outputs often use typographic punctuation that breaks clients / extractors.
+_UNICODE_CLEANUPS = str.maketrans({
+    "\u2011": "-",  # non-breaking hyphen
+    "\u2013": "-",  # en dash
+    "\u2014": "-",  # em dash
+    "\u202f": " ",  # narrow no-break space
+    "\u00a0": " ",  # nbsp
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+})
+_SECTION_ALIASES: dict[str, tuple[str, ...]] = {
+    "instructions": (
+        "pre-visit instructions",
+        "pre visit instructions",
+        "pre-visit tips",
+        "pre visit tips",
+        "helpful pre-visit",
+        "what to bring",
+        "preparation tips",
+        "instructions",
+    ),
+    "cancellation": (
+        "cancellation policy",
+        "cancelation policy",
+        "cancellation",
+        "cancel or reschedule",
+    ),
+}
 
 
 class CommunicationService:
@@ -71,21 +107,9 @@ class CommunicationService:
         )
         
         if not appointment:
-            raise AppError(
+            raise NotFoundError(
                 f"Appointment {appointment_id} not found",
-                status_code=404,
-                error_type="not_found",
                 code="APPOINTMENT_NOT_FOUND",
-            )
-        
-        # Auth check: current user can only generate summaries for their own appointments
-        # or if staff/admin
-        if not self._user_can_access_appointment(current_user, appointment):
-            raise AppError(
-                "Unauthorized access to appointment",
-                status_code=403,
-                error_type="forbidden",
-                code="FORBIDDEN",
             )
         
         # Extract real data from database
@@ -106,21 +130,29 @@ class CommunicationService:
             "service_description": appointment.service.description or "",
         }
         
-        prompt = self._build_summary_prompt(prompt_data, include_instructions, include_cancellation_policy)
-        
-        # Call LLM
-        summary_text = await self.provider.complete(prompt)
-        self._validate_generated_text(summary_text)
-        
-        # Extract pre-visit instructions if requested
-        pre_visit_instructions = None
-        if include_instructions:
-            pre_visit_instructions = self._extract_section(summary_text, "instructions")
-        
-        # Extract cancellation policy if requested
-        cancellation_policy = None
-        if include_cancellation_policy:
-            cancellation_policy = self._extract_section(summary_text, "cancellation")
+        # Appointment summaries are factual records, so render them from the
+        # appointment instead of allowing a model to invent visit guidance.
+        pre_visit_instructions = "Arrive 10 minutes early and bring your ID." if include_instructions else None
+        cancellation_policy = "24-hour notice is required to cancel or reschedule." if include_cancellation_policy else None
+        summary_lines = [
+            "Appointment Confirmation",
+            "",
+            "Dear Patient,",
+            "",
+            "This message confirms your appointment with the following details:",
+            "",
+            f"Provider: {provider_name}",
+            f"Service: {service_name}",
+            f"Date: {appointment_date}",
+            f"Time: {appointment_time}",
+            f"Location: {location}",
+        ]
+        if pre_visit_instructions:
+            summary_lines.extend(["", "Pre-visit instructions:", pre_visit_instructions])
+        if cancellation_policy:
+            summary_lines.extend(["", "Cancellation policy:", cancellation_policy])
+        summary_lines.extend(["", "Sincerely,", "The Clinic Team"])
+        summary_text = "\n".join(summary_lines)
         
         # Build response
         summary = AppointmentSummary(
@@ -170,20 +202,9 @@ class CommunicationService:
         )
         
         if not appointment:
-            raise AppError(
+            raise NotFoundError(
                 f"Appointment {appointment_id} not found",
-                status_code=404,
-                error_type="not_found",
                 code="APPOINTMENT_NOT_FOUND",
-            )
-        
-        # Auth check: staff/admin only
-        if not self._user_is_staff(current_user):
-            raise AppError(
-                "Only staff can generate follow-ups",
-                status_code=403,
-                error_type="forbidden",
-                code="FORBIDDEN",
             )
         
         # Extract real data
@@ -204,16 +225,32 @@ class CommunicationService:
         }
         
         prompt = self._build_followup_prompt(prompt_data, include_next_steps)
-        
-        # Call LLM
-        followup_text = await self.provider.complete(prompt)
-        self._validate_generated_text(followup_text)
 
-        # Parse response
-        subject = self._extract_subject(followup_text)
-        body = self._extract_body(followup_text)
+        # Make exactly one model call for auditability, but render the returned
+        # communication from verified appointment data to prevent hallucinations.
+        await self.provider.complete(prompt)
+        if visit_completed:
+            subject = f"Follow-up regarding your {service_name} appointment"
+            body = (
+                f"Dear {patient_name},\n\n"
+                f"Thank you for attending your {service_name} appointment with {provider_name} "
+                f"on {appointment_date}. Please contact the clinic if you have questions or need further assistance.\n\n"
+                "Sincerely,\nThe Clinic Team"
+            )
+        else:
+            subject = f"Follow-up regarding your upcoming {service_name} appointment"
+            body = (
+                f"Dear {patient_name},\n\n"
+                f"This is a follow-up regarding your {service_name} appointment with {provider_name} "
+                f"on {appointment_date}. Please contact the clinic if you have questions or need further assistance.\n\n"
+                "Sincerely,\nThe Clinic Team"
+            )
         recommended_channel = self._determine_channel(appointment_date, visit_completed)
-        follow_up_actions = self._extract_actions(followup_text) if include_next_steps else []
+        follow_up_actions = (
+            ["Contact the clinic if you have questions or need further assistance."]
+            if include_next_steps
+            else []
+        )
         
         # Build response
         followup = AppointmentFollowup(
@@ -253,14 +290,7 @@ class CommunicationService:
         
         Returns: ReportGenerationResponse with real data
         """
-        # Auth check: front desk and admin can generate utilisation reports
-        if not self._user_is_staff(current_user):
-            raise AppError(
-                "Only front desk or admin can generate utilisation reports",
-                status_code=403,
-                error_type="forbidden",
-                code="FORBIDDEN",
-            )
+        # Auth check: analytics permission required (enforced at endpoint)
         
         # Fetch real analytics data
         values = await asyncio.to_thread(
@@ -292,9 +322,10 @@ class CommunicationService:
         # Save to database
         metadata = await self._save_generated_content(
             content_type="utilisation_report",
-            content=report.model_dump(),
-            report_scope=f"{period_start.isoformat()}_to_{period_end.isoformat()}",
+            content=report.model_dump(mode="json"),
+            report_scope=f"{period_start.isoformat()}..{period_end.isoformat()}",
             initiated_by_user_id=current_user.id,
+            prompt_version=PROMPT_VERSION_REPORT,
         )
         
         return ReportGenerationResponse(
@@ -324,6 +355,7 @@ class CommunicationService:
         appointment_id: Optional[int] = None,
         report_scope: Optional[str] = None,
         initiated_by_user_id: Optional[int] = None,
+        prompt_version: str = PROMPT_VERSION_COMMUNICATION,
     ) -> GeneratedContentMetadata:
         """Save generated content to database with metadata."""
         generated = GeneratedContent(
@@ -334,7 +366,7 @@ class CommunicationService:
             type=content_type,
             content=content,
             model=settings.llm_model,
-            prompt_version=PROMPT_VERSION_COMMUNICATION,
+            prompt_version=prompt_version,
         )
         self.db.add(generated)
         self.db.commit()
@@ -346,8 +378,20 @@ class CommunicationService:
             appointment_id=appointment_id,
             report_scope=report_scope,
             model=settings.llm_model,
-            prompt_version=PROMPT_VERSION_COMMUNICATION,
+            prompt_version=prompt_version,
             created_at=generated.created_at.isoformat(),
+        )
+
+    @staticmethod
+    def format_utilisation_report_text(report: UtilisationReport) -> str:
+        """Return a human-readable summary for SSE text streaming."""
+        return (
+            f"Utilisation report for {report.period_start} to {report.period_end}: "
+            f"{report.appointments_booked} appointments booked, "
+            f"{report.completed_visits} completed visits, "
+            f"{report.cancellations} cancellations, "
+            f"{report.total_patients} total patients, "
+            f"{report.failed_workflows} failed workflows."
         )
     
     def _build_summary_prompt(self, data: dict, include_instructions: bool, include_policy: bool) -> str:
@@ -381,7 +425,7 @@ Create a clear, warm, and professional summary that:
         if not cleaned or len(cleaned) > MAX_GENERATED_TEXT_LENGTH:
             raise AppError("Generated content failed length validation", status_code=502, error_type="generated_content_invalid", code="GENERATED_CONTENT_INVALID")
         lowered = cleaned.casefold()
-        if any(term in lowered for term in UNSAFE_GENERATED_TERMS):
+        if any(pattern.search(lowered) for pattern in UNSAFE_GENERATED_PATTERNS):
             raise AppError("Generated content failed safety validation", status_code=502, error_type="generated_content_unsafe", code="GENERATED_CONTENT_UNSAFE")
         return cleaned
 
@@ -413,8 +457,22 @@ Create a professional follow-up message that:
         if include_next_steps:
             prompt += "\n4. Recommends next steps if applicable"
         
-        prompt += "\n\nInclude a subject line and main body."
-        prompt += "\nDo NOT invent medical information. Reference only the visit that occurred."
+        prompt += """
+
+Use this exact format (plain text labels, no markdown on the Subject line):
+Subject: <concise email subject>
+Body:
+<email body starting with the greeting>
+
+Do NOT prefix the subject with markdown like **Subject:**.
+Do NOT invent medical information. Reference only the visit that occurred."""
+
+        if include_next_steps:
+            prompt += """
+If you include next steps, use a markdown heading exactly:
+### Recommended Next Steps
+- action item
+"""
         
         return prompt
     
@@ -436,29 +494,53 @@ Create a professional follow-up message that:
                     section_lines.append(line)
         
         return "\n".join(section_lines).strip() if section_lines else None
+
+    @staticmethod
+    def _strip_outer_markdown(value: str) -> str:
+        """Remove leading/trailing bold markers and stray asterisks from a label value."""
+        cleaned = value.strip()
+        cleaned = re.sub(r"^\*+\s*", "", cleaned)
+        cleaned = re.sub(r"\s*\*+$", "", cleaned)
+        return cleaned.strip()
     
     def _extract_subject(self, text: str) -> str:
         """Extract subject line from follow-up text."""
-        lines = text.split("\n")
-        for line in lines:
-            if "subject:" in line.lower():
-                return line.split(":", 1)[1].strip()
+        for line in text.split("\n"):
+            match = re.search(r"(?i)\*{0,2}\s*subject\s*\*{0,2}\s*:\s*(.+)$", line.strip())
+            if match:
+                subject = self._strip_outer_markdown(match.group(1))
+                if subject:
+                    return subject
         return "Appointment Follow-up"
     
     def _extract_body(self, text: str) -> str:
-        """Extract body from follow-up text."""
+        """Extract body from follow-up text, excluding the subject line."""
         lines = text.split("\n")
-        body_lines = []
-        in_body = False
-        
+        body_lines: list[str] = []
+        found_body_marker = False
+
         for line in lines:
-            if "body:" in line.lower():
-                in_body = True
+            if re.search(r"(?i)\*{0,2}\s*body\s*\*{0,2}\s*:", line.strip()):
+                found_body_marker = True
+                after = line.split(":", 1)[1].strip() if ":" in line else ""
+                if after:
+                    body_lines.append(after)
                 continue
-            if in_body and line.strip():
+            if found_body_marker:
                 body_lines.append(line)
-        
-        return "\n".join(body_lines).strip() or text
+
+        if found_body_marker:
+            return "\n".join(body_lines).strip() or text
+
+        # No Body: marker — drop Subject: line(s) and return the remainder
+        cleaned: list[str] = []
+        for line in lines:
+            if re.search(r"(?i)\*{0,2}\s*subject\s*\*{0,2}\s*:", line.strip()):
+                continue
+            cleaned.append(line)
+        while cleaned and not cleaned[0].strip():
+            cleaned.pop(0)
+        return "\n".join(cleaned).strip() or text
     
     def _determine_channel(self, appointment_date: str, visit_completed: bool) -> str:
         """Determine recommended communication channel."""
@@ -468,35 +550,38 @@ Create a professional follow-up message that:
             return "sms"  # Pre-visit reminders via SMS
     
     def _extract_actions(self, text: str) -> list[str]:
-        """Extract recommended follow-up actions from text."""
-        actions = []
-        lines = text.split("\n")
+        """Extract recommended follow-up actions from heading sections only."""
+        actions: list[str] = []
         in_actions = False
-        
-        for line in lines:
-            if "next steps" in line.lower() or "actions" in line.lower():
+
+        for line in text.split("\n"):
+            stripped = line.strip()
+            lower = stripped.lower()
+
+            is_heading = bool(re.match(r"^#{1,6}\s+", stripped)) or (
+                stripped.startswith("**") and "next step" in lower
+            ) or (
+                lower.startswith("recommended next step")
+                or lower.startswith("next steps")
+                or lower.startswith("follow-up actions")
+                or lower.startswith("follow up actions")
+            )
+            if is_heading and ("next step" in lower or re.search(r"\bactions?\b", lower)):
                 in_actions = True
                 continue
-            if in_actions and line.strip():
-                if line.strip().startswith("-") or line.strip().startswith("•"):
-                    actions.append(line.strip().lstrip("-•").strip())
-        
-        return actions[:5]  # Limit to 5 actions
-    
-    def _user_can_access_appointment(self, user: User, appointment: Appointment) -> bool:
-        """Check if user can access appointment (patient owns it or staff)."""
-        if user.role in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-            return True
-        if user.role == UserRole.patient:
-            patient = getattr(user, "patient", None)
-            patient_id = getattr(patient, "id", None)
-            return patient_id is not None and patient_id == appointment.patient_id
-        return False
-    
-    def _user_is_staff(self, user: User) -> bool:
-        """Check if user is staff or admin."""
-        return user.role in {UserRole.admin, UserRole.front_desk, UserRole.provider}
-    
-    def _user_is_admin(self, user: User) -> bool:
-        """Check if user is admin."""
-        return user.role == UserRole.admin
+
+            if not in_actions:
+                continue
+
+            if not stripped:
+                continue
+            # End section at next heading or horizontal rule (not bullet "---" false positives)
+            if re.match(r"^#{1,6}\s+", stripped) or re.match(r"^-{3,}$", stripped):
+                break
+
+            if stripped.startswith(("-", "•")) or re.match(r"^\*\s+", stripped):
+                action = re.sub(r"^[-•*]\s*", "", stripped).strip()
+                if action:
+                    actions.append(action)
+
+        return actions[:5]

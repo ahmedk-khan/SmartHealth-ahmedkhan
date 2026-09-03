@@ -35,5 +35,5 @@ def reconcile_analytics(db: Session = Depends(get_db), current_user: User = Depe
 
 
 @router.get("/ai", summary="AI analytics")
-def get_ai_analytics(db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.ANALYTICS_READ))) -> dict[str, int | float]:
+def get_ai_analytics(db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.ANALYTICS_READ))) -> dict[str, object]:
     return AnalyticsService(db).get_ai_metrics()

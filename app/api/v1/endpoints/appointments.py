@@ -1,23 +1,30 @@
-import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Optional
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_db, require_admin_or_front_desk
+from app.core.dependencies import get_db, require_ai_rate_limit
+from app.core.authorization import Permission, require_permission
 from app.core.authorization import require_permission, Permission
+from app.core.logging import get_request_id
+from app.core.sse import ai_streaming_response, sse_error_events, stream_generation_payload
 from app.models import User, VisitStatus
-from app.schemas.assistant import AppointmentFollowupRequest, AppointmentSummaryRequest
+from app.schemas.assistant import (
+    AppointmentFollowupRequest,
+    AppointmentFollowupResponse,
+    AppointmentSummaryRequest,
+    AppointmentSummaryResponse,
+)
 from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead, PaginatedResponse, WaitlistEntryRead
 from app.services.appointment_service import AppointmentService
 from app.services.communication_service import CommunicationService
 from app.services.llm_provider import get_llm_provider
-
 from app.core.logging import get_correlation_id
-from app.core.ai_controls import AIRedisStore, get_ai_redis_store
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/waitlist/{slot_id}", response_model=WaitlistEntryRead, status_code=status.HTTP_201_CREATED)
@@ -127,16 +134,60 @@ def billing_pre_check(appointment_id: int, db: Session = Depends(get_db), curren
     return AppointmentService(db).billing_pre_check(appointment_id, current_user)
 
 
-@router.post("/{appointment_id}/generate/summary")
+@router.post(
+    "/{appointment_id}/generate/summary",
+    response_model=AppointmentSummaryResponse,
+    summary="Generate appointment summary",
+    description="Generate one patient-facing appointment summary as a standard JSON response.",
+)
 async def generate_appointment_summary(
     appointment_id: int,
     payload: AppointmentSummaryRequest = AppointmentSummaryRequest(),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_or_front_desk),
-    ai_store: AIRedisStore = Depends(get_ai_redis_store),
+    current_user: User = Depends(require_permission(Permission.COMMUNICATION_GENERATE)),
+    _: User = Depends(require_ai_rate_limit),
 ):
-    if not await ai_store.allow_request(current_user.id):
-        raise HTTPException(status_code=429, detail="AI request rate limit exceeded")
+    summary, metadata = await CommunicationService(db, get_llm_provider()).generate_appointment_summary(
+        appointment_id=appointment_id,
+        current_user=current_user,
+        include_instructions=payload.include_instructions,
+        include_cancellation_policy=payload.include_cancellation_policy,
+    )
+    return AppointmentSummaryResponse(
+        data=summary,
+        metadata=metadata,
+    )
+
+
+@router.post(
+    "/{appointment_id}/generate/summary/stream",
+    response_model=None,
+    response_class=StreamingResponse,
+    summary="Generate appointment summary",
+    description=(
+        "Streams a patient-facing appointment summary as Server-Sent Events. "
+        "Events: `text` (progressive tokens), `content` (structured AppointmentSummary), "
+        "`metadata` (audit record), `done` (terminal payload with ok=true)."
+    ),
+    responses={
+        200: {"description": "SSE stream of generation events", "content": {"text/event-stream": {}}},
+        401: {"description": "Authentication required"},
+        403: {"description": "Admin or front-desk role required"},
+        404: {"description": "Appointment not found"},
+        429: {"description": "AI rate limit exceeded"},
+        502: {"description": "Generated content failed safety or validation checks"},
+        503: {"description": "LLM provider unavailable or not configured"},
+    },
+)
+async def generate_appointment_summary_stream(
+    appointment_id: int,
+    request: Request,
+    payload: AppointmentSummaryRequest = AppointmentSummaryRequest(),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.COMMUNICATION_GENERATE)),
+    _: User = Depends(require_ai_rate_limit),
+):
+    request_id = getattr(request.state, "request_id", None) or get_request_id()
 
     async def events() -> AsyncIterator[str]:
         try:
@@ -149,27 +200,79 @@ async def generate_appointment_summary(
             )
             content = summary.model_dump(mode="json")
             metadata_payload = metadata.model_dump(mode="json")
-            for token in json.dumps(content, sort_keys=True).split():
-                yield f"event: text\ndata: {json.dumps({'token': token + ' '})}\n\n"
-            yield f"event: metadata\ndata: {json.dumps(metadata_payload)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'content': content, 'metadata': metadata_payload})}\n\n"
-        except Exception:
-            yield f"event: error\ndata: {json.dumps({'message': 'Appointment summary generation failed'})}\n\n"
-            yield f"event: done\ndata: {json.dumps({'error': True})}\n\n"
+            async for frame in stream_generation_payload(
+                stream_text=summary.summary,
+                content=content,
+                metadata=metadata_payload,
+                text_chunk_size=len(summary.summary),
+            ):
+                yield frame
+        except Exception as exc:
+            logger.exception("Appointment summary generation failed", extra={"appointment_id": appointment_id})
+            for frame in sse_error_events(exc, request_id=request_id):
+                yield frame
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return ai_streaming_response(events())
 
 
-@router.post("/{appointment_id}/generate/followup")
+@router.post(
+    "/{appointment_id}/generate/followup",
+    response_model=AppointmentFollowupResponse,
+    summary="Generate appointment follow-up",
+    description="Generate one staff follow-up draft as a standard JSON response.",
+)
 async def generate_appointment_followup(
     appointment_id: int,
     payload: AppointmentFollowupRequest = AppointmentFollowupRequest(),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_or_front_desk),
-    ai_store: AIRedisStore = Depends(get_ai_redis_store),
+    current_user: User = Depends(require_permission(Permission.COMMUNICATION_GENERATE)),
+    _: User = Depends(require_ai_rate_limit),
 ):
-    if not await ai_store.allow_request(current_user.id):
-        raise HTTPException(status_code=429, detail="AI request rate limit exceeded")
+    followup, metadata = await CommunicationService(db, get_llm_provider()).generate_appointment_followup(
+        appointment_id=appointment_id,
+        current_user=current_user,
+        tone=payload.tone,
+        include_next_steps=payload.include_next_steps,
+    )
+    return AppointmentFollowupResponse(
+        data=followup,
+        metadata=metadata,
+    )
+
+
+@router.post(
+    "/{appointment_id}/generate/followup/stream",
+    response_model=None,
+    response_class=StreamingResponse,
+    summary="Generate appointment follow-up",
+    description=(
+        "Streams a staff follow-up communication draft as Server-Sent Events. "
+        "Events: `text` (progressive body tokens), `content` (structured AppointmentFollowup), "
+        "`metadata` (audit record), `done` (terminal payload with ok=true)."
+    ),
+    responses={
+        200: {"description": "SSE stream of generation events", "content": {"text/event-stream": {}}},
+        401: {"description": "Authentication required"},
+        403: {"description": "Admin or front-desk role required"},
+        404: {"description": "Appointment not found"},
+        429: {"description": "AI rate limit exceeded"},
+        502: {"description": "Generated content failed safety or validation checks"},
+        503: {"description": "LLM provider unavailable or not configured"},
+    },
+)
+async def generate_appointment_followup_stream(
+    appointment_id: int,
+    request: Request,
+    payload: AppointmentFollowupRequest = AppointmentFollowupRequest(),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.COMMUNICATION_GENERATE)),
+    _: User = Depends(require_ai_rate_limit),
+):
+    request_id = getattr(request.state, "request_id", None) or get_request_id()
+    logger.info(
+        "Starting appointment follow-up generation",
+        extra={"appointment_id": appointment_id, "request_id": request_id, "user_id": current_user.id},
+    )
 
     async def events() -> AsyncIterator[str]:
         try:
@@ -182,13 +285,21 @@ async def generate_appointment_followup(
             )
             content = followup.model_dump(mode="json")
             metadata_payload = metadata.model_dump(mode="json")
-            for token in json.dumps(content, sort_keys=True).split():
-                yield f"event: text\ndata: {json.dumps({'token': token + ' '})}\n\n"
-            yield f"event: metadata\ndata: {json.dumps(metadata_payload)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'content': content, 'metadata': metadata_payload})}\n\n"
-        except Exception:
-            yield f"event: error\ndata: {json.dumps({'message': 'Appointment follow-up generation failed'})}\n\n"
-            yield f"event: done\ndata: {json.dumps({'error': True})}\n\n"
+            async for frame in stream_generation_payload(
+                stream_text=followup.body,
+                content=content,
+                metadata=metadata_payload,
+                text_chunk_size=len(followup.body),
+            ):
+                yield frame
+            logger.info(
+                "Completed appointment follow-up generation",
+                extra={"appointment_id": appointment_id, "request_id": request_id, "user_id": current_user.id},
+            )
+        except Exception as exc:
+            logger.exception("Appointment follow-up generation failed", extra={"appointment_id": appointment_id})
+            for frame in sse_error_events(exc, request_id=request_id):
+                yield frame
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return ai_streaming_response(events())
 

@@ -12,6 +12,8 @@ This document shows complete journeys through the SmartHealth system, including:
 
 ## Flow 1: Patient Books Appointment (Complete Journey)
 
+Patients use `POST /api/v1/appointments` to book an available slot. The saga reserves the slot internally. There is no separate patient-facing `/slots/{slot_id}/reserve` step; patients use the waitlist flow when the slot is unavailable.
+
 ### Timeline & Components
 
 ```

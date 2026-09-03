@@ -3,12 +3,14 @@ import time
 
 from sqlalchemy.exc import IntegrityError
 from app.core.exceptions import AppError, ConflictError, ForbiddenError, NotFoundError
-from app.core.authorization import Permission, AppointmentOwnershipGuard
+from app.core.authorization import Permission, AppointmentOwnershipGuard, VisitTransitionGuard, NoShowGuard
 from app.core.authorization.service import check_permission
-from app.core.idempotency import idempotency_store
+from app.core.idempotency import IdempotencyStoreUnavailableError, idempotency_store
 from app.core.settings import settings
 from app.core.metrics import (
     record_appointment_created,
+    record_appointment_booked,
+    record_double_booking_prevented,
     record_appointment_cancelled,
     record_visit_status_transition,
     record_appointment_booking_time,
@@ -69,7 +71,10 @@ class AppointmentService(BaseService):
             raise exc
 
         if idempotency_key:
-            cached = idempotency_store.get(current_user.id, idempotency_key)
+            try:
+                cached = idempotency_store.get(current_user.id, idempotency_key)
+            except IdempotencyStoreUnavailableError:
+                raise
             if cached:
                 if cached.get("status") == "IN_PROGRESS":
                     raise AppError("A booking with this idempotency key is in progress", status_code=409, error_type="idempotency_in_progress")
@@ -102,16 +107,20 @@ class AppointmentService(BaseService):
             self.log_warning("Slot not found", operation="create_appointment", data={"slot_id": payload.slot_id})
             raise NotFoundError("Slot not found", code="SLOT_NOT_FOUND")
         if slot.status != SlotStatus.AVAILABLE:
+            record_double_booking_prevented()
             self.log_warning("Slot not available", operation="create_appointment", data={"slot_id": slot.id, "status": slot.status})
             raise ConflictError("Slot is no longer available", code="SLOT_NOT_AVAILABLE")
 
-        if idempotency_key and not idempotency_store.claim(current_user.id, idempotency_key):
-            raise AppError("A booking with this idempotency key is in progress", status_code=409, error_type="idempotency_in_progress")
+        if idempotency_key:
+            try:
+                if not idempotency_store.claim(current_user.id, idempotency_key):
+                    raise AppError("A booking with this idempotency key is in progress", status_code=409, error_type="idempotency_in_progress")
+            except IdempotencyStoreUnavailableError:
+                raise
 
         workflow_payload = {
-            **payload.model_dump(),
+            "slot_id": payload.slot_id,
             "patient_id": patient.id,
-            "slot_id": slot.id,
             "idempotency_key": idempotency_key,
             "correlation_id": correlation_id,
         }
@@ -131,7 +140,7 @@ class AppointmentService(BaseService):
                 if self._orchestrator:
                     await self._orchestrator.run_appointment_saga(workflow_payload)
                 else:
-                    from app.workers.temporal.workflows.appointment_saga import start_appointment_saga
+                    from app.workers.temporal.runtime.appointment_booking import start_appointment_saga
                     await start_appointment_saga(workflow_payload)
             except Exception as exc:
                 self.log_error("Failed to start appointment saga workflow", operation="create_appointment", exc_info=True)
@@ -150,10 +159,15 @@ class AppointmentService(BaseService):
             if self._orchestrator:
                 workflow_result = await self._orchestrator.run_appointment_saga(workflow_payload)
             else:
-                from app.workers.temporal.workflows.appointment_saga import run_appointment_saga
+                from app.workers.temporal.runtime.appointment_booking import run_appointment_saga
                 workflow_result = await run_appointment_saga(workflow_payload)
         except AppError:
             self.log_error("Appointment saga failed: AppError", operation="create_appointment", exc_info=True)
+            if idempotency_key:
+                idempotency_store.delete(current_user.id, idempotency_key)
+            raise
+        except ConflictError:
+            self.log_warning("Appointment saga failed: slot conflict", operation="create_appointment")
             if idempotency_key:
                 idempotency_store.delete(current_user.id, idempotency_key)
             raise
@@ -176,20 +190,13 @@ class AppointmentService(BaseService):
         # Record metrics
         try:
             record_appointment_created()
+            record_appointment_booked()
             booking_duration = time.time() - booking_start_time
             record_appointment_booking_time(booking_duration)
         except Exception as exc:
             self.log_error("Failed to record appointment creation metrics", operation="create_appointment", data={"error": str(exc)})
-        
-        await self.events.publish_appointment_event_async(
-            "appointment.created",
-            appointment_id=appointment.id,
-            patient_id=patient.id,
-            provider_id=appointment.provider_id,
-            service_id=appointment.service_id,
-            slot_id=appointment.slot_id,
-            status=appointment.status.value,
-        )
+
+        # appointment.created is published inside the saga workflow; do not publish again here.
 
         return appointment
 
@@ -316,7 +323,7 @@ class AppointmentService(BaseService):
         if not appointment:
             raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
 
-        self._authorize(appointment, current_user)
+        VisitTransitionGuard(current_user, appointment, target_status).enforce()
 
         if appointment.status != AppointmentStatus.CONFIRMED:
             raise AppError(
@@ -412,9 +419,9 @@ class AppointmentService(BaseService):
         appointment = self.appointments.get_by_id(appointment_id)
         if not appointment:
             raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
-        
-        self._authorize(appointment, current_user)
-        
+
+        NoShowGuard(current_user, appointment).enforce()
+
         if appointment.status in {AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED, AppointmentStatus.NO_SHOW}:
             raise ConflictError("Appointment is already in a terminal state", code="APPOINTMENT_TERMINAL")
         

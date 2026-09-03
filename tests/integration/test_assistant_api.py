@@ -157,12 +157,11 @@ def test_assistant_refuses_diagnosis_and_persists_refusal(client):
     )
 
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/event-stream")
-    assert "I can't provide medical advice" in response.text
-    assert "This is not medical advice" in response.text
-    assert "event: citations" in response.text
-    assert "event: done" in response.text
-    assert response.text.rfind("event: text") < response.text.find("event: citations") < response.text.find("event: done")
+    assert response.headers["content-type"].startswith("application/json")
+    response_data = response.json()
+    assert response_data["success"] is True
+    assert "I can't provide medical advice" in response_data["data"]["answer"]
+    assert response_data["data"]["refused"] is True
 
     from app.db import SessionLocal
 
@@ -178,6 +177,22 @@ def test_assistant_refuses_diagnosis_and_persists_refusal(client):
         assert interaction.latency_ms is not None
     finally:
         db.close()
+
+
+def test_assistant_stream_route_preserves_sse_contract(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    token = _login(client, "patient@example.com", "secret123")
+
+    response = client.post(
+        "/assistant/ask/stream",
+        json={"question": "Diagnose me"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: text" in response.text
+    assert "event: done" in response.text
 
 
 def test_assistant_rejects_empty_and_gibberish_input(client):
@@ -331,7 +346,7 @@ def test_utilisation_report_streams_and_uses_analytics(client):
 
     token = _login(client, "admin@example.com", "secret123")
     response = client.post(
-        "/api/v1/reports/generate/utilisation",
+        "/api/v1/reports/generate/utilisation/stream",
         json={"period_start": "2026-08-01", "period_end": "2026-08-31"},
         headers={"Authorization": f"Bearer {token}"},
     )

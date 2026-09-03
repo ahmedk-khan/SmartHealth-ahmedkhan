@@ -53,6 +53,16 @@ class HealthResponse(BaseModel):
     status: str = Field(..., description="Service status: 'ok' means the application is running.")
 
 
+class VersionResponse(BaseModel):
+    """Deployment metadata for build and runtime tracking."""
+
+    service: str = Field(default="smarthealth-api", description="Logical service identifier.")
+    api_version: str = Field(..., description="API contract version.")
+    build_revision: str = Field(..., description="Source revision or build identifier.")
+    environment: str = Field(..., description="Runtime environment name.")
+    ai_pipeline: str = Field(..., description="Configured AI pipeline version label.")
+
+
 class ReadinessCheckResult(BaseModel):
     """Result of individual dependency check (ok, disabled, or error: <reason>)."""
 
@@ -101,9 +111,21 @@ def health():
     return {"status": "ok"}
 
 
-@router.get("/health/version", tags=["health"], summary="Build version")
+@router.get(
+    "/health/version",
+    tags=["health"],
+    summary="Build and deployment metadata",
+    response_model=VersionResponse,
+    description="Returns the public API version, build revision, runtime environment, and AI pipeline identifier.",
+)
 def version():
-    return {"revision": settings.build_revision, "ai_pipeline": "safety-first-v3"}
+    return {
+        "service": "smarthealth-api",
+        "api_version": settings.api_version,
+        "build_revision": settings.build_revision,
+        "environment": settings.app_env,
+        "ai_pipeline": "safety-first-v3",
+    }
 
 
 @router.get(

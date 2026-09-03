@@ -111,16 +111,21 @@ class SlotService(BaseService):
             raise ConflictError("Slot is no longer available", code="SLOT_NOT_AVAILABLE")
         return {"slot_id": slot.id, "status": slot.status.value}
 
-    async def reserve_slot_async(self, scheduling_repo: SchedulingRepository, slot_id: int, user_id: int) -> dict[str, int | str]:
-        """Reserve a slot (async for workflow activities)."""
-        reserved = await scheduling_repo.reserve_slot(slot_id, user_id)
+    async def reserve_slot_async(
+        self,
+        scheduling_repo: SchedulingRepository,
+        slot_id: int,
+        patient_id: int,
+    ) -> dict[str, int | str]:
+        """Reserve a slot for a patient (async for workflow activities)."""
+        reserved = await scheduling_repo.reserve_slot(slot_id, patient_id)
         if reserved is None:
             raise ConflictError("Slot is no longer available", code="SLOT_NOT_AVAILABLE")
-        return {"slot_id": slot_id, "user_id": user_id, "status": reserved.status.value}
+        return {"slot_id": slot_id, "patient_id": patient_id, "status": reserved.status.value}
 
     async def release_slot_async(self, scheduling_repo: SchedulingRepository, slot_id: int) -> dict[str, int | str]:
         """Release a reserved slot (async for workflow activities)."""
         released = await scheduling_repo.release_slot(slot_id)
         if released is None:
             raise NotFoundError("Reserved slot not found", code="RESERVED_SLOT_NOT_FOUND")
-        return {"slot_id": slot_id, "user_id": released.patient_id or 0, "status": released.status.value}
+        return {"slot_id": slot_id, "patient_id": released.patient_id or 0, "status": released.status.value}

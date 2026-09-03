@@ -1,6 +1,8 @@
-import uuid
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
+from temporalio import client as temporal_client
+
+from app.core.settings import settings
 from app.core.exceptions import AppError, ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.core.authorization import Permission, ServiceOwnershipGuard
 from app.core.authorization.service import check_permission
@@ -11,22 +13,6 @@ from app.services.healthcare_event_service import HealthcareEventService
 
 if TYPE_CHECKING:
     from app.services.adapters import WorkflowOrchestratorAdapter
-
-
-_LOCAL_PUBLISH_WORKFLOWS: dict[str, dict[str, Any]] = {}
-
-
-class _LocalWorkflowHandle:
-    def __init__(self, workflow_id: str) -> None:
-        self.workflow_id = workflow_id
-        self.run_id = str(uuid.uuid4())
-
-    async def query(self, query_name: str) -> Any:
-        if query_name == "publish_progress":
-            return _LOCAL_PUBLISH_WORKFLOWS[self.workflow_id]
-        if query_name != "publish_status":
-            raise AppError("Unsupported query", status_code=400, error_type="invalid_query")
-        return _LOCAL_PUBLISH_WORKFLOWS[self.workflow_id]["status"]
 
 
 class ServiceManagementService(BaseService):
@@ -133,6 +119,7 @@ class ServiceManagementService(BaseService):
                     code="PROVIDER_PROFILE_INCOMPLETE",
                 )
         ServiceOwnershipGuard(current_user, service).enforce()
+        service = self.repository.recover_stale_publishing(service, settings.service_publish_stale_minutes)
         if service.status == ServiceStatus.PUBLISHED:
             raise ConflictError("Service is already published", code="SERVICE_ALREADY_PUBLISHED")
         if service.status == ServiceStatus.PUBLISHING:
@@ -146,12 +133,10 @@ class ServiceManagementService(BaseService):
             return await self._orchestrator.start_service_publish_workflow(service_id, workflow_id)
         
         # Fallback: lazy-load Temporal (for backward compatibility)
-        from temporalio import client as temporal_client
         from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
         from temporalio.exceptions import WorkflowAlreadyStartedError
         from app.workers.temporal.workflows.service_publish import ServicePublishWorkflow
         from app.workers.temporal.policies import WORKFLOW_RETRY
-        from app.core.settings import settings
         from datetime import timedelta
         
         workflow_id = f"service-publish-{service.id}"
@@ -159,7 +144,9 @@ class ServiceManagementService(BaseService):
             client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
         except Exception as exc:
             if settings.app_env.lower() in {"local", "test", "development"}:
-                handle = await self._start_local_publish_workflow(service.id, workflow_id)
+                from app.workers.temporal.runtime.service_publish import run_service_publish_locally
+
+                handle = await run_service_publish_locally(service.id, workflow_id)
                 return {"workflow_id": workflow_id, "run_id": handle.run_id}
             raise AppError("Temporal workflow service is unavailable", status_code=503, error_type="workflow_unavailable", code="TEMPORAL_UNAVAILABLE") from exc
         try:
@@ -194,15 +181,15 @@ class ServiceManagementService(BaseService):
             raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
         ServiceOwnershipGuard(current_user, service).enforce()
         workflow_id = f"service-publish-{service.id}"
+        service = self.repository.recover_stale_publishing(service, settings.service_publish_stale_minutes)
         
         # Use injected orchestrator if available
         if self._orchestrator:
             return await self._orchestrator.get_workflow_status(workflow_id)
         
         # Fallback: lazy-load Temporal
-        from temporalio import client as temporal_client
-        from app.core.settings import settings
-        
+        from app.workers.temporal.runtime.service_publish import get_local_publish_progress
+
         try:
             client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
             handle = client.get_workflow_handle(workflow_id)
@@ -211,49 +198,11 @@ class ServiceManagementService(BaseService):
                 return {"workflow_id": workflow_id, "status": progress}
             return {"workflow_id": workflow_id, **progress}
         except Exception as exc:
-            if workflow_id in _LOCAL_PUBLISH_WORKFLOWS:
-                return {"workflow_id": workflow_id, **_LOCAL_PUBLISH_WORKFLOWS[workflow_id]}
+            local_progress = get_local_publish_progress(workflow_id)
+            if local_progress is not None:
+                return {"workflow_id": workflow_id, **local_progress}
             if "not found" in str(exc).lower() or "workflow could not be found" in str(exc).lower():
                 if service.status == ServiceStatus.PUBLISHED:
                     return {"workflow_id": workflow_id, "status": ServiceStatus.PUBLISHED.value}
                 raise NotFoundError("Publish workflow not found", code="WORKFLOW_NOT_FOUND")
-            raise
-
-    async def _start_local_publish_workflow(self, service_id: int, workflow_id: str) -> "_LocalWorkflowHandle":
-        # Lazy import to avoid circular dependencies
-        from app.workers.temporal.activities.service_publish import (
-            chunk_service,
-            embed_chunks,
-            publish_service_published_event,
-            structure_service,
-            validate_service,
-        )
-        
-        _LOCAL_PUBLISH_WORKFLOWS[workflow_id] = {
-            "status": ServiceStatus.PUBLISHING.value,
-            "stage": "VALIDATING",
-            "chunks_total": 0,
-            "embeddings_generated": 0,
-            "run_id": str(uuid.uuid4()),
-        }
-        try:
-            published = await validate_service(service_id)
-            if published["status"] == ServiceStatus.PUBLISHED.value:
-                _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = ServiceStatus.PUBLISHED.value
-                _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "COMPLETE"
-                return _LocalWorkflowHandle(workflow_id)
-
-            service_struct = await structure_service(published["service"])
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "CHUNKING"
-            chunks = await chunk_service(service_struct)
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id].update({"stage": "EMBEDDING", "chunks_total": len(chunks)})
-            embedded_chunks = await embed_chunks(chunks)
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id].update({"stage": "PERSISTING", "embeddings_generated": len(embedded_chunks)})
-            await publish_service_published_event({"service_id": service_id, "chunks": embedded_chunks})
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "COMPLETE"
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = ServiceStatus.PUBLISHED.value
-            return _LocalWorkflowHandle(workflow_id)
-        except Exception as exc:
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = "FAILED"
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["error"] = str(exc)
             raise

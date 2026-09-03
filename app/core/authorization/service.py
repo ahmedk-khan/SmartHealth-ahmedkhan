@@ -1,28 +1,24 @@
-"""
-Enterprise Authorization Service - Simplified Pattern
+"""Coarse-grained authorization service functions."""
 
-Two-tier authorization model:
-1. COARSE-GRAINED: Role-based permission mapping (role → permission)
-2. FINE-GRAINED: Resource ownership/access guards (in endpoints)
-"""
-
-from app.models.user import User
-from app.core.exceptions import ForbiddenError
 from app.core.authorization.permissions import Permission, ROLE_PERMISSIONS
+from app.core.exceptions import AccessDeniedError, PermissionDeniedError
+from app.models.user import User, UserRole
 
 
 def check_permission(current_user: User, permission: Permission) -> None:
-    """
-    Coarse-grained permission check.
-    
-    Verifies user's role has the required permission.
-    This is called at endpoint entry via require_permission() dependency.
-    
-    Raises ForbiddenError if permission is not granted.
-    """
+    """Verify the user's role includes the required permission."""
     user_permissions = ROLE_PERMISSIONS.get(current_user.role, set())
     if permission not in user_permissions:
-        raise ForbiddenError(
-            detail=f"Permission denied: {current_user.role} lacks {permission}",
-            error_type="forbidden"
+        raise PermissionDeniedError(
+            message="Permission denied",
+            detail=f"{current_user.role.value} lacks {permission.value}",
+        )
+
+
+def ensure_admin_or_front_desk(current_user: User) -> None:
+    """Backward-compatible staff check for communication generation paths."""
+    if current_user.role not in {UserRole.admin, UserRole.front_desk}:
+        raise AccessDeniedError(
+            message="Admin or front desk access required",
+            detail={"required_roles": ["admin", "front_desk"], "actual_role": current_user.role.value},
         )

@@ -59,6 +59,16 @@ appointments_created_total = Counter(
     "Total appointments created",
 )
 
+appointments_booked_total = Counter(
+    "appointments_booked_total",
+    "Total appointments successfully booked",
+)
+
+double_booking_prevented_total = Counter(
+    "double_booking_prevented_total",
+    "Total booking attempts rejected because the slot was unavailable",
+)
+
 appointments_cancelled_total = Counter(
     "appointments_cancelled_total",
     "Total appointments cancelled",
@@ -159,6 +169,22 @@ celery_task_duration_seconds = Histogram(
     "Celery task execution duration in seconds by task_name",
     ["task_name"],
     buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0),
+)
+
+# ============================================================================
+# Domain Metrics: Events
+# ============================================================================
+
+events_consumed_total = Counter(
+    "events_consumed_total",
+    "Total analytics events successfully consumed",
+    ["topic"],
+)
+
+events_failed_total = Counter(
+    "events_failed_total",
+    "Total analytics events that failed processing",
+    ["topic", "error_type"],
 )
 
 # ============================================================================
@@ -273,6 +299,40 @@ def record_appointment_created() -> None:
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Failed to record appointment creation metric: {exc}", exc_info=True)
+
+
+def record_appointment_booked() -> None:
+    """Record a successfully completed appointment booking."""
+    try:
+        appointments_booked_total.inc()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("Failed to record appointment booking metric", exc_info=True)
+
+
+def record_double_booking_prevented() -> None:
+    """Record a booking rejected because its slot was already unavailable."""
+    try:
+        double_booking_prevented_total.inc()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("Failed to record double-booking metric", exc_info=True)
+
+
+def record_event_consumed(topic: str) -> None:
+    try:
+        events_consumed_total.labels(topic=topic).inc()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record consumed event metric", exc_info=True)
+
+
+def record_event_failed(topic: str, error_type: str) -> None:
+    try:
+        events_failed_total.labels(topic=topic, error_type=error_type).inc()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record failed event metric", exc_info=True)
 
 
 def record_appointment_cancelled() -> None:

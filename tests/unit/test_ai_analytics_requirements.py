@@ -1,9 +1,33 @@
 from app.models import AIInteraction, User, UserRole
 from app.repositories.ai_interactions import AIInteractionRepository
+from app.api.v1.endpoints.analytics import get_ai_analytics
 from app.db import Base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+def test_ai_analytics_endpoint_uses_object_response_contract():
+    assert get_ai_analytics.__annotations__["return"] == dict[str, object]
+
+
+def test_ai_interaction_summary_handles_missing_table_gracefully():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    db = Session()
+    try:
+        summary = AIInteractionRepository(db).summary()
+        assert summary["questions_asked"] == 0
+        assert summary["interactions_total"] == 0
+        assert summary["intent_breakdown"] == {}
+        assert summary["booking_conversions"] == 0
+    finally:
+        db.close()
 
 
 def test_ai_interaction_summary_includes_correlation_and_breakdown():

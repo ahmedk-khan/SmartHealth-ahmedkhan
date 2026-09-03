@@ -16,5 +16,11 @@ class KafkaConfig:
         normalized = event_type.strip().lower().replace(" ", ".")
         return f"{self.topic_prefix}.{normalized}" if self.topic_prefix else normalized
 
+    def dlq_topic(self) -> str:
+        suffix = settings.kafka_dlq_topic_suffix.strip().lstrip(".")
+        if self.topic_prefix:
+            return f"{self.topic_prefix}.{suffix}"
+        return suffix
+
 
 kafka_config = KafkaConfig()

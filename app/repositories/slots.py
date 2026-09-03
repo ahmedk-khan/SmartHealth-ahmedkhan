@@ -3,7 +3,7 @@ import datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Patient, Provider, Service, Slot, SlotStatus
+from app.models import Appointment, Patient, Provider, Service, Slot, SlotStatus
 from app.repositories.base import BaseRepository
 
 
@@ -41,7 +41,32 @@ class SlotRepository(BaseRepository):
         self.refresh(slot)
         return slot
 
-    def reserve_for_patient(self, slot_id: int, patient_id: int) -> Slot | None:
+    def release_expired_reservations(self, ttl_minutes: int) -> int:
+        """Release RESERVED slots that exceeded the hold TTL and have no appointment."""
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=ttl_minutes)
+        expired_slots = (
+            self.db.query(Slot)
+            .outerjoin(Appointment, Appointment.slot_id == Slot.id)
+            .filter(
+                Slot.status == SlotStatus.RESERVED,
+                Slot.updated_at < cutoff,
+                Appointment.id.is_(None),
+            )
+            .all()
+        )
+        released = 0
+        for slot in expired_slots:
+            slot.status = SlotStatus.AVAILABLE
+            slot.patient_id = None
+            slot.updated_at = datetime.datetime.now(datetime.timezone.utc)
+            released += 1
+        if released:
+            self.commit()
+        return released
+
+    def reserve_for_patient(self, slot_id: int, patient_id: int, *, ttl_minutes: int | None = None) -> Slot | None:
+        if ttl_minutes is not None:
+            self.release_expired_reservations(ttl_minutes)
         now = datetime.datetime.now(datetime.timezone.utc)
         updated = self.db.query(Slot).filter(Slot.id == slot_id, Slot.status == SlotStatus.AVAILABLE).update(
             {"status": SlotStatus.RESERVED, "patient_id": patient_id, "updated_at": now},
@@ -108,10 +133,10 @@ class SchedulingRepository:
     async def get_slot(self, slot_id: int) -> Slot | None:
         return await self.session.scalar(select(Slot).where(Slot.id == slot_id))
 
-    async def reserve_slot(self, slot_id: int, user_id: int) -> Slot | None:
+    async def reserve_slot(self, slot_id: int, patient_id: int) -> Slot | None:
         result = await self.session.execute(
             update(Slot).where(Slot.id == slot_id, Slot.status == SlotStatus.AVAILABLE)
-            .values(status=SlotStatus.RESERVED, patient_id=user_id)
+            .values(status=SlotStatus.RESERVED, patient_id=patient_id)
         )
         if result.rowcount != 1:
             await self.session.rollback()

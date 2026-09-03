@@ -13,7 +13,6 @@ The AI assistant provides intelligent, safety-checked answers to healthcare-rela
 | `POST /api/v1/appointments/{id}/generate/summary` | No | No | Yes | Yes |
 | `POST /api/v1/appointments/{id}/generate/followup` | No | No | Yes | Yes |
 | `POST /api/v1/reports/generate/utilisation` | No | No | Yes | Yes |
-| `POST /api/v1/reports/generate/utilisation/async` | No | No | Yes | Yes |
 | `GET /api/v1/tasks/{task_id}` | No | No | Yes, own task | Yes, own task |
 | `GET /api/v1/analytics/ai` | No | No | Yes | Yes |
 
@@ -34,7 +33,6 @@ not routes that every user is expected to call directly:
 | Visit communication | `POST /api/v1/appointments/{id}/generate/summary` | Front desk, admin | Prepare a patient-facing appointment summary or confirmation message. |
 | Follow-up communication | `POST /api/v1/appointments/{id}/generate/followup` | Front desk, admin | Draft a post-visit or appointment follow-up message. |
 | Operational reporting | `POST /api/v1/reports/generate/utilisation` | Front desk, admin | Generate a utilization report for a selected date range immediately. |
-| Long reports | `POST /api/v1/reports/generate/utilisation/async` | Front desk, admin | Queue a report when generation may take longer; poll the returned task ID. |
 | Report status | `GET /api/v1/tasks/{task_id}` | Front desk, admin | Retrieve a queued report owned by the requesting staff user. |
 | Operational dashboard | `GET /api/v1/analytics/summary` | Front desk, admin | View booking, visit, cancellation, and utilization metrics. |
 | AI monitoring | `GET /api/v1/analytics/ai` | Front desk, admin | Monitor assistant request, refusal, latency, and cache metrics. |

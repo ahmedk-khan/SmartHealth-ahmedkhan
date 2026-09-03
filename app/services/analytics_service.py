@@ -1,5 +1,7 @@
 import datetime
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.core.exceptions import AppError
 from app.repositories.analytics import AnalyticsRepository
 from app.repositories.ai_interactions import AIInteractionRepository
@@ -75,8 +77,17 @@ class AnalyticsService(BaseService):
             "drift": drift,
         }
 
-    def get_ai_metrics(self) -> dict[str, int | float]:
-        metrics = self.ai_repository.summary()
+    def get_ai_metrics(self) -> dict[str, object]:
+        try:
+            metrics = self.ai_repository.summary()
+        except SQLAlchemyError as exc:
+            raise AppError(
+                "AI analytics are temporarily unavailable",
+                status_code=503,
+                error_type="analytics_unavailable",
+                code="AI_ANALYTICS_UNAVAILABLE",
+            ) from exc
+
         set_ai_booking_conversions(int(metrics["booking_conversions"]))
         set_ai_booking_conversion_rate(float(metrics["booking_conversion_rate"]))
         return metrics

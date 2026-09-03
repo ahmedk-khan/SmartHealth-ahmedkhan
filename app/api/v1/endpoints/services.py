@@ -2,10 +2,8 @@
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_db
-from app.core.authorization import require_permission, Permission, ServiceOwnershipGuard
-from app.core.exceptions import NotFoundError
+from app.core.authorization import require_permission, Permission
 from app.models import User
-from app.repositories import ServiceRepository
 from app.schemas.domain import PaginatedResponse, ServiceCreate, ServiceRead, SlotRead
 from app.services import ServiceManagementService, SlotService
 
@@ -40,12 +38,6 @@ def update_service(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.SERVICE_UPDATE)),
 ):
-    # Ownership guard: Ensure user can modify this service
-    service = ServiceRepository(db).get_by_id(service_id)
-    if not service:
-        raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
-    ServiceOwnershipGuard(current_user, service).enforce()
-    
     svc = ServiceManagementService(db)
     return svc.update_service(service_id, payload, current_user)
 
@@ -61,12 +53,6 @@ async def publish_service(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.SERVICE_PUBLISH)),
 ):
-    # Ownership guard: Ensure user can publish this service
-    service = ServiceRepository(db).get_by_id(service_id)
-    if not service:
-        raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
-    ServiceOwnershipGuard(current_user, service).enforce()
-    
     svc = ServiceManagementService(db)
     return await svc.publish_service(service_id, current_user)
 
@@ -82,12 +68,6 @@ def unpublish_service(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.SERVICE_UNPUBLISH)),
 ):
-    # Ownership guard: Ensure user can unpublish this service
-    service = ServiceRepository(db).get_by_id(service_id)
-    if not service:
-        raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
-    ServiceOwnershipGuard(current_user, service).enforce()
-    
     svc = ServiceManagementService(db)
     return svc.unpublish_service(service_id, current_user)
 
@@ -102,12 +82,6 @@ async def publish_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.SERVICE_PUBLISH)),
 ):
-    # Ownership guard: Ensure user can view this service's publish status
-    service = ServiceRepository(db).get_by_id(service_id)
-    if not service:
-        raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
-    ServiceOwnershipGuard(current_user, service).enforce()
-    
     svc = ServiceManagementService(db)
     return await svc.publish_status(service_id, current_user)
 

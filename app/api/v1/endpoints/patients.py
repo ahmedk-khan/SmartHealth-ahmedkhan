@@ -4,15 +4,13 @@ from sqlalchemy.orm import Session
 from app.core.authorization import require_permission, Permission, PatientOwnershipGuard
 from app.core.dependencies import get_db
 from app.core.exceptions import (
-    AppError,
-    ForbiddenError,
     ConflictError,
     PatientNotFoundError,
-    ProviderNotFoundError,
 )
-from app.models import User, UserRole
-from app.repositories import PatientRepository, ProviderRepository
+from app.models import User
+from app.repositories import PatientRepository
 from app.schemas.domain import PaginatedResponse, PatientRead, PatientUpdate
+from app.services.patient_service import PatientService
 
 router = APIRouter(prefix="/patients", tags=["patients"])
 
@@ -30,15 +28,12 @@ def list_patients(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.PATIENT_READ)),
 ):
-    if current_user.role == UserRole.provider:
-        provider = ProviderRepository(db).get_by_user_id(current_user.id)
-        if not provider:
-            raise ProviderNotFoundError("Provider profile not found")
-        items, total = PatientRepository(db).list_provider_patients(provider.id, offset=offset, limit=limit, search=search)
-    elif current_user.role in {UserRole.admin, UserRole.front_desk}:
-        items, total = PatientRepository(db).list_patients(offset=offset, limit=limit, search=search)
-    else:
-        raise ForbiddenError()
+    items, total = PatientService(db).list_patients(
+        current_user=current_user,
+        search=search,
+        offset=offset,
+        limit=limit,
+    )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 

@@ -16,6 +16,7 @@ from app.core.ai_controls import AIRedisStore
 from app.core.logging import get_correlation_id
 from app.core.metrics import record_ai_cache_hit, record_ai_interaction
 from app.core.settings import settings
+from app.core.sse import assistant_stream_error, error_payload
 from app.models import User
 from app.repositories import AIInteractionRepository, AppointmentRepository, GeneratedContentRepository, PatientRepository, ProviderRepository, ServiceRepository, SlotRepository
 from app.services.assistant_prompts import DISCLAIMER, PROMPT_NAV_V1, PROMPT_VERSION_ASSISTANT, PROMPT_VERSION_REPORT
@@ -224,33 +225,24 @@ class AssistantService:
                 cache_hit=cache_hit,
             )
         except Exception as exc:
-            # Catch unexpected errors and log them
-            logger.error("Unexpected error in assistant stream", exc_info=True, extra={"user_id": user.id, "error": str(exc)})
-            yield {
-                "type": "error",
-                "value": {
-                    "type": "ai_error",
-                    "message": "The AI assistant is temporarily unavailable. Please try again later.",
-                    "code": "AI_PIPELINE_UNAVAILABLE",
-                },
-            }
-            yield {"type": "citations", "value": []}
-            error_msg = "The AI assistant is temporarily unavailable. Please try again later."
+            err = assistant_stream_error(exc)
+            yield {"type": "error", "value": err}
             await self._persist_interaction(
                 user_id=user.id,
                 question=normalized,
                 intent=decision.intent,
                 retrieved_ids=retrieved_ids,
-                answer=error_msg,
+                answer=err["message"],
                 model_name=model_name,
                 refused=False,
                 started_at=started_at,
                 prompt_version=PROMPT_VERSION_ASSISTANT,
                 input_tokens=self._estimate_tokens(token_source),
-                output_tokens=self._estimate_tokens(error_msg),
+                output_tokens=self._estimate_tokens(err["message"]),
                 conversation_id=conversation_id,
                 cache_hit=cache_hit,
             )
+            return
         except asyncio.CancelledError:
             await self._persist_interaction(
                 user_id=user.id,

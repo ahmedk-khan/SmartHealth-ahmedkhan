@@ -4,7 +4,7 @@ Prometheus metrics endpoints.
 Provides `/metrics` endpoint for Prometheus scraping in standard format.
 """
 
-from prometheus_client import generate_latest, CollectorRegistry, REGISTRY
+from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from starlette.responses import Response
 
 
@@ -30,7 +30,7 @@ def create_metrics_endpoint():
             metrics_data = generate_latest(REGISTRY)
             return Response(
                 content=metrics_data,
-                media_type="text/plain; version=0.0.4; charset=utf-8",
+                media_type=CONTENT_TYPE_LATEST,
             )
         except Exception as exc:
             import logging

@@ -115,11 +115,17 @@ class AnalyticsRepository(BaseRepository):
             AnalyticsAppointmentDaily.id != record_id,
         ).first() is not None
 
-    def get_or_create_daily_for_consumer(self, event_date: str) -> AnalyticsDaily:
+    def get_or_create_daily_for_consumer(self, event_date: str | datetime.date) -> AnalyticsDaily:
         """Return or flush-create the daily analytics aggregate for an event date."""
-        daily = self.db.query(AnalyticsDaily).filter(AnalyticsDaily.date == event_date).first()
+        # analytics_daily.date is DATE; never compare it to a VARCHAR/isoformat string (Postgres rejects date = varchar).
+        target_day = (
+            event_date
+            if isinstance(event_date, datetime.date) and not isinstance(event_date, datetime.datetime)
+            else datetime.date.fromisoformat(str(event_date)[:10])
+        )
+        daily = self.db.query(AnalyticsDaily).filter(AnalyticsDaily.date == target_day).first()
         if daily is None:
-            daily = AnalyticsDaily(date=datetime.date.fromisoformat(event_date))
+            daily = AnalyticsDaily(date=target_day)
             self.add(daily)
             self.flush()
         return daily

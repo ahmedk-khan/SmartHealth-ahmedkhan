@@ -1,41 +1,37 @@
 """
-SmartHealth Authorization Module - Simplified Enterprise Pattern
+SmartHealth authorization package.
 
-Two-tier authorization:
-1. COARSE-GRAINED: require_permission() - role-based permission checks
-2. FINE-GRAINED: Guard classes - resource ownership/access checks
+Two-tier model:
+1. Coarse-grained RBAC via ``Permission`` + ``require_permission`` dependencies
+2. Fine-grained resource checks via guard classes in ``policies``
 """
 
-from app.core.authorization.permissions import Permission
-from app.core.dependencies import (
-    require_permission,
+from app.core.authorization.deps import (
     require_admin,
-    require_staff,
     require_admin_or_front_desk,
-    require_patient,
-    require_provider,
+    require_permission,
+    require_role,
 )
+from app.core.authorization.permissions import Permission
 from app.core.authorization.policies import (
+    AppointmentOwnershipGuard,
+    NoShowGuard,
     PatientOwnershipGuard,
     ProviderOwnershipGuard,
-    SlotOwnershipGuard,
     ServiceOwnershipGuard,
-    AppointmentOwnershipGuard,
+    SlotOwnershipGuard,
     VisitTransitionGuard,
-    NoShowGuard,
 )
+from app.core.authorization.service import check_permission, ensure_admin_or_front_desk
 
 __all__ = [
-    # Permissions
     "Permission",
-    # Dependencies (role-based & permission-based)
+    "check_permission",
+    "ensure_admin_or_front_desk",
     "require_permission",
+    "require_role",
     "require_admin",
-    "require_staff",
     "require_admin_or_front_desk",
-    "require_patient",
-    "require_provider",
-    # Guards (resource-based)
     "PatientOwnershipGuard",
     "ProviderOwnershipGuard",
     "SlotOwnershipGuard",

@@ -35,15 +35,10 @@ class TemporalWorkflowOrchestrator(WorkflowOrchestratorAdapter):
                 )
             except Exception as exc:
                 if settings.app_env.lower() in {"local", "test", "development"}:
-                    # Fallback: start local workflow for dev/test
                     logger.info("Temporal unavailable, falling back to local workflow", extra={"service_id": service_id})
-                    from app.workers.temporal.activities.service_publish import (
-                        validate_service, structure_service, chunk_service, embed_chunks, publish_service_published_event
-                    )
-                    from app.models import ServiceStatus
-                    
-                    # Simulate local workflow execution
-                    handle = type('_LocalHandle', (), {'run_id': f'local-{workflow_id}'})()
+                    from app.workers.temporal.runtime.service_publish import run_service_publish_locally
+
+                    handle = await run_service_publish_locally(service_id, workflow_id)
                     return {"workflow_id": workflow_id, "run_id": handle.run_id}
                 
                 raise ExternalServiceError(
@@ -89,12 +84,17 @@ class TemporalWorkflowOrchestrator(WorkflowOrchestratorAdapter):
                 return {"workflow_id": workflow_id, "status": progress}
             return {"workflow_id": workflow_id, **progress}
         except Exception as exc:
+            from app.workers.temporal.runtime.service_publish import get_local_publish_progress
+
+            local_progress = get_local_publish_progress(workflow_id)
+            if local_progress is not None:
+                return {"workflow_id": workflow_id, **local_progress}
             logger.exception("Error querying workflow status", extra={"workflow_id": workflow_id})
             raise ExternalServiceError("Failed to query workflow status", status_code=503) from exc
     
     async def run_appointment_saga(self, appointment_data: dict[str, Any]) -> dict[str, Any]:
         """Run an appointment booking saga via Temporal."""
-        from app.workers.temporal.workflows.appointment_saga import run_appointment_saga
+        from app.workers.temporal.runtime.appointment_booking import run_appointment_saga
         return await run_appointment_saga(appointment_data)
 
 

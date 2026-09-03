@@ -1,14 +1,14 @@
-from collections.abc import Callable, Generator
-from enum import Enum
+from collections.abc import Generator
 
 from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app.core.exceptions import AppError, UnauthorizedError, ForbiddenError
+from app.core.ai_controls import AIRedisStore, get_ai_redis_store
+from app.core.exceptions import RateLimitError, UnauthorizedError
 from app.core.security import decode_access_token
-from app.models import User, UserRole
+from app.models import User
 from app.repositories.auth import AuthRepository
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
@@ -38,71 +38,11 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 
-# ============================================================================
-# Role-Based Dependencies
-# ============================================================================
-
-def _role_value(role: str | UserRole | Enum) -> str:
-    if isinstance(role, UserRole):
-        return role.value
-    if isinstance(role, Enum):
-        return str(role.value)
-    return str(role)
-
-
-def require_role(*roles: str | UserRole | Enum) -> Callable[[User], User]:
-    allowed = {_role_value(role) for role in roles}
-
-    def dependency(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role.value not in allowed:
-            raise ForbiddenError()
-        return current_user
-
-    return dependency
-
-
-def require_roles(*roles: str | UserRole | Enum) -> Callable[[User], User]:
-    return require_role(*roles)
-
-
-def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role != UserRole.admin:
-        raise ForbiddenError("Admin access required")
+async def require_ai_rate_limit(
+    current_user: User = Depends(get_current_user),
+    ai_store: AIRedisStore = Depends(get_ai_redis_store),
+) -> User:
+    """Reject AI requests when the per-user Redis rate limit is exceeded."""
+    if not await ai_store.allow_request(current_user.id):
+        raise RateLimitError("AI request rate limit exceeded")
     return current_user
-
-
-def require_admin_or_front_desk(current_user: User = Depends(require_role(UserRole.admin, UserRole.front_desk))) -> User:
-    return current_user
-
-
-def require_staff(current_user: User = Depends(require_role(UserRole.admin, UserRole.front_desk, UserRole.provider))) -> User:
-    return current_user
-
-
-def require_provider(current_user: User = Depends(require_role(UserRole.provider))) -> User:
-    return current_user
-
-
-def require_patient(current_user: User = Depends(require_role(UserRole.patient))) -> User:
-    return current_user
-
-
-# ============================================================================
-# Permission-Based Dependencies
-# ============================================================================
-
-def require_permission(permission):
-    """
-    FastAPI dependency for coarse-grained permission check.
-    
-    Usage:
-        @app.get("/endpoint")
-        def endpoint(current_user: User = Depends(require_permission(Permission.PATIENT_READ))):
-            # User is already authorized with required permission
-            # Fine-grained checks happen inline in endpoint
-    """
-    def dependency(current_user: User = Depends(get_current_user)) -> User:
-        from app.core.authorization.service import check_permission
-        check_permission(current_user, permission)
-        return current_user
-    return dependency

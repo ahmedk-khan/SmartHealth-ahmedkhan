@@ -29,7 +29,9 @@ class AIRedisStore:
     def _get_client(self):
         if self._client is None and Redis is not None:
             redis_url = settings.redis_url.strip()
-            if redis_url and "://" not in redis_url:
+            if not redis_url or redis_url.startswith("memory://"):
+                return None
+            if "://" not in redis_url:
                 redis_url = f"redis://{redis_url}"
             self._client = Redis.from_url(
                 redis_url,

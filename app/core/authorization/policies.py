@@ -14,7 +14,7 @@ Example:
 """
 
 from app.models import User, UserRole, VisitStatus
-from app.core.exceptions import ForbiddenError
+from app.core.exceptions import AccessDeniedError
 
 
 class Guard:
@@ -28,9 +28,12 @@ class Guard:
         raise NotImplementedError
     
     def enforce(self) -> None:
-        """Raise ForbiddenError if access denied"""
+        """Raise AccessDeniedError if access denied."""
         if not self.passed():
-            raise ForbiddenError("Access denied")
+            raise AccessDeniedError(
+                message="Access denied",
+                detail={"guard": self.__class__.__name__},
+            )
 
 
 class PatientOwnershipGuard(Guard):
@@ -102,21 +105,32 @@ class ServiceOwnershipGuard(Guard):
 
 class AppointmentOwnershipGuard(Guard):
     """Check appointment ownership: user is patient/provider or staff"""
-    
+
     def __init__(self, user: User, appointment):
         super().__init__(user)
         self.appointment = appointment
-    
+
+    def _owns_as_patient(self) -> bool:
+        patient = getattr(self.user, "patient", None)
+        if patient is not None:
+            return patient.id == self.appointment.patient_id
+        apt_patient = getattr(self.appointment, "patient", None)
+        return apt_patient is not None and apt_patient.user_id == self.user.id
+
+    def _owns_as_provider(self) -> bool:
+        provider = getattr(self.user, "provider", None)
+        if provider is not None:
+            return provider.id == self.appointment.provider_id
+        apt_provider = getattr(self.appointment, "provider", None)
+        return apt_provider is not None and apt_provider.user_id == self.user.id
+
     def passed(self) -> bool:
-        # Staff always allowed
         if self.user.role in {UserRole.admin, UserRole.front_desk}:
             return True
-        # Providers can access own appointments
         if self.user.role == UserRole.provider:
-            return self.appointment.provider_id is not None
-        # Patients can access own appointments
+            return self._owns_as_provider()
         if self.user.role == UserRole.patient:
-            return self.appointment.patient_id is not None
+            return self._owns_as_patient()
         return False
 
 
@@ -137,10 +151,10 @@ class VisitTransitionGuard(Guard):
         if self.user.role == UserRole.front_desk:
             return self.target_status == VisitStatus.CHECKED_IN
         
-        # Providers can transition visits for their appointments
+        # Providers can transition visits for their own appointments
         if self.user.role == UserRole.provider:
-            return self.appointment.provider_id is not None
-        
+            return AppointmentOwnershipGuard(self.user, self.appointment)._owns_as_provider()
+
         return False
 
 
@@ -157,5 +171,5 @@ class NoShowGuard(Guard):
             return True
         # Provider can mark own appointments as no-show
         if self.user.role == UserRole.provider:
-            return self.appointment.provider_id is not None
+            return AppointmentOwnershipGuard(self.user, self.appointment)._owns_as_provider()
         return False

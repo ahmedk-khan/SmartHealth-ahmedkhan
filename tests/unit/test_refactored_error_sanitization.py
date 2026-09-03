@@ -6,9 +6,42 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 import httpx
 
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, database_exception_handler
 from app.services.search_service import search_services
 from app.services.embedding_service import HuggingFaceEmbeddingProvider
+from sqlalchemy.exc import OperationalError
+from types import SimpleNamespace
+
+
+def test_database_errors_return_service_unavailable_response():
+    request = SimpleNamespace(
+        method="GET",
+        url=SimpleNamespace(path="/api/v1/analytics/ai"),
+        state=SimpleNamespace(request_id="req-123"),
+    )
+    exc = OperationalError("SELECT 1", {}, Exception("DB is offline"))
+
+    response = database_exception_handler(request, exc)
+
+    assert response.status_code == 503
+    payload = response.body.decode()
+    assert "DATABASE_UNAVAILABLE" in payload
+    assert "Database temporarily unavailable" in payload
+
+
+def test_health_version_returns_clear_metadata_contract():
+    from app.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/health/version")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["service"] == "smarthealth-api"
+    assert payload["api_version"] == "1.0.0"
+    assert payload["build_revision"] == "development"
+    assert payload["environment"] in {"local", "development", "test", "production", "prod"}
+    assert payload["ai_pipeline"] == "safety-first-v3"
 
 
 def test_health_readiness_hides_raw_exception_class_names(monkeypatch, caplog):

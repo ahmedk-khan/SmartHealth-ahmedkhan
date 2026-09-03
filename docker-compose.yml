@@ -111,7 +111,7 @@ services:
     cpus: 1.0
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import pathlib; assert any('app.workers.temporal.worker' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
+      test: ["CMD", "python", "-c", "import os, pathlib; assert any('app.workers.temporal.worker' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline') if p.parent.name != str(os.getpid()))"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -133,17 +133,17 @@ services:
 
   analytics-consumer:
     build: .
-    command: python -m app.workers.kafka.consumers.analytics_consumer
+    command: python -m app.workers.kafka
     # Defaults - confirm against real infra sizing.
     mem_limit: 512m
     cpus: 1.0
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import pathlib; assert any('app.workers.kafka.consumers.analytics_consumer' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
+      test: ["CMD", "python", "-c", "import pathlib; assert any('app.workers.kafka' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline'))"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 90s
     volumes:
       - ./app:/app/app
     env_file:
@@ -155,6 +155,20 @@ services:
       postgres:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    depends_on:
+      api:
         condition: service_healthy
 
   postgres:
@@ -231,11 +245,12 @@ services:
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
+      # Prefer the INTERNAL listener used by in-compose clients (kafka:29092).
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 10s
-      retries: 20
-      start_period: 20s
+      retries: 30
+      start_period: 40s
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
@@ -257,3 +272,4 @@ volumes:
   temporal-data:
   kafka-data:
   zookeeper-data:
+  prometheus-data:

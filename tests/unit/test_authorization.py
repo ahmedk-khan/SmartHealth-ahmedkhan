@@ -1,20 +1,22 @@
 import pytest
+from types import SimpleNamespace
+
 from app.models.user import User, UserRole
 from app.models import VisitStatus
 from app.core.exceptions import ForbiddenError
 from app.core.authorization.permissions import Permission, ROLE_PERMISSIONS
-from app.core.authorization.service import authorize
-from app.core.authorization.policies import ServiceOwnershipGuard
+from app.core.authorization.service import check_permission, ensure_admin_or_front_desk
 from app.core.authorization.policies import (
-    PatientPolicy,
-    ProviderPolicy,
-    SlotPolicy,
-    ServicePolicy,
-    AppointmentPolicy,
+    PatientOwnershipGuard,
+    ProviderOwnershipGuard,
+    SlotOwnershipGuard,
+    ServiceOwnershipGuard,
+    AppointmentOwnershipGuard,
+    VisitTransitionGuard,
+    NoShowGuard,
 )
 
 
-# Mock models/repositories for testing policies without db overhead
 class MockPatient:
     def __init__(self, id, user_id):
         self.id = id
@@ -31,9 +33,10 @@ class MockProvider:
 
 
 class MockSlot:
-    def __init__(self, id, provider_id):
+    def __init__(self, id, provider_id, provider=None):
         self.id = id
         self.provider_id = provider_id
+        self.provider = provider
 
 
 class MockService:
@@ -43,105 +46,66 @@ class MockService:
 
 
 class MockAppointment:
-    def __init__(self, id, patient_id, provider_id):
+    def __init__(self, id, patient_id, provider_id, patient=None, provider=None):
         self.id = id
         self.patient_id = patient_id
         self.provider_id = provider_id
+        self.patient = patient
+        self.provider = provider
 
 
-class MockPatientRepository:
-    def __init__(self, patients_map):
-        self._map = patients_map
-
-    def get_by_user_id(self, user_id):
-        return self._map.get(user_id)
-
-
-class MockProviderRepository:
-    def __init__(self, providers_map, services_map=None):
-        self._map = providers_map
-        self._services = services_map or {}
-
-    def get_by_user_id(self, user_id):
-        return self._map.get(user_id)
-
-    def has_service(self, provider_id, service_id):
-        return service_id in self._services.get(provider_id, set())
+def _user(user_id: int, role: UserRole, *, patient=None, provider=None):
+    return SimpleNamespace(id=user_id, role=role, patient=patient, provider=provider)
 
 
 def test_role_permissions_mapping():
-    # Admin has all permissions
     assert len(ROLE_PERMISSIONS[UserRole.admin]) == len(Permission)
-    
-    # Patient role check
     assert Permission.APPOINTMENT_CREATE in ROLE_PERMISSIONS[UserRole.patient]
     assert Permission.ANALYTICS_READ not in ROLE_PERMISSIONS[UserRole.patient]
-    
-    # Provider role check
     assert Permission.SERVICE_PUBLISH in ROLE_PERMISSIONS[UserRole.provider]
     assert Permission.ANALYTICS_READ not in ROLE_PERMISSIONS[UserRole.provider]
 
 
-def test_authorize_coarse_grained():
+def test_check_permission_coarse_grained():
     admin = User(role=UserRole.admin)
     patient = User(role=UserRole.patient)
 
-    # Admin is allowed to reconcile analytics
-    authorize(admin, Permission.ANALYTICS_RECONCILE)
+    check_permission(admin, Permission.ANALYTICS_RECONCILE)
 
-    # Patient is not allowed
     with pytest.raises(ForbiddenError):
-        authorize(patient, Permission.ANALYTICS_RECONCILE)
+        check_permission(patient, Permission.ANALYTICS_RECONCILE)
 
 
-def test_patient_policy():
-    admin = User(id=1, role=UserRole.admin)
-    front_desk = User(id=2, role=UserRole.front_desk)
-    patient_user = User(id=10, role=UserRole.patient)
-    other_patient_user = User(id=11, role=UserRole.patient)
+def test_ensure_admin_or_front_desk():
+    ensure_admin_or_front_desk(User(role=UserRole.admin))
+    ensure_admin_or_front_desk(User(role=UserRole.front_desk))
 
+    with pytest.raises(ForbiddenError):
+        ensure_admin_or_front_desk(User(role=UserRole.provider))
+
+
+def test_patient_ownership_guard():
     patient_record = MockPatient(id=100, user_id=10)
+    owner = _user(10, UserRole.patient, patient=patient_record)
+    other_patient = _user(11, UserRole.patient, patient=MockPatient(id=101, user_id=11))
 
-    # Admin/front desk can read, update, delete
-    assert PatientPolicy.can_read(admin, patient_record) is True
-    assert PatientPolicy.can_read(front_desk, patient_record) is True
-
-    # Patient can manage own profile
-    assert PatientPolicy.can_read(patient_user, patient_record) is True
-    assert PatientPolicy.can_update(patient_user, patient_record) is True
-    assert PatientPolicy.can_delete(patient_user, patient_record) is True
-
-    # Other patient cannot manage profile
-    assert PatientPolicy.can_read(other_patient_user, patient_record) is False
-    assert PatientPolicy.can_update(other_patient_user, patient_record) is False
+    assert PatientOwnershipGuard(User(id=1, role=UserRole.admin), patient_record).passed() is True
+    assert PatientOwnershipGuard(owner, patient_record).passed() is True
+    assert PatientOwnershipGuard(other_patient, patient_record).passed() is False
 
 
-def test_provider_policy():
-    admin = User(id=1, role=UserRole.admin)
-    provider_user = User(id=20, role=UserRole.provider)
-    other_provider_user = User(id=21, role=UserRole.provider)
-
+def test_provider_ownership_guard():
     provider_record = MockProvider(id=200, user_id=20)
-    repo = MockProviderRepository({20: provider_record})
+    owner = _user(20, UserRole.provider, provider=provider_record)
+    other_provider = _user(21, UserRole.provider, provider=MockProvider(id=201, user_id=21))
 
-    # Admin can update
-    assert ProviderPolicy.can_update(admin, provider_record) is True
-
-    # Provider can update own record
-    assert ProviderPolicy.can_update(provider_user, provider_record) is True
-
-    # Other provider cannot update
-    assert ProviderPolicy.can_update(other_provider_user, provider_record) is False
-
-    # Provider record access
-    assert ProviderPolicy.can_access_records(provider_user, provider_record, repo) is True
-    assert ProviderPolicy.can_access_records(other_provider_user, provider_record, repo) is False
-    assert ProviderPolicy.can_access_records(admin, provider_record, repo) is True
+    assert ProviderOwnershipGuard(owner, provider_record).passed() is True
+    assert ProviderOwnershipGuard(other_provider, provider_record).passed() is False
 
 
 def test_service_ownership_guard_uses_service_providers_relationship():
-    owner = User(id=20, role=UserRole.provider)
-    other_provider = User(id=21, role=UserRole.provider)
+    owner = _user(20, UserRole.provider, provider=MockProvider(id=200, user_id=20))
+    other_provider = _user(21, UserRole.provider, provider=MockProvider(id=201, user_id=21))
     service = MockService(id=500)
     service.providers = [MockProvider(id=200, user_id=20)]
 
@@ -149,95 +113,58 @@ def test_service_ownership_guard_uses_service_providers_relationship():
     assert ServiceOwnershipGuard(other_provider, service).passed() is False
 
 
-def test_slot_policy():
-    admin = User(id=1, role=UserRole.admin)
-    provider_user = User(id=20, role=UserRole.provider)
-    other_provider_user = User(id=21, role=UserRole.provider)
-
+def test_slot_ownership_guard():
     provider_record = MockProvider(id=200, user_id=20)
-    other_provider_record = MockProvider(id=201, user_id=21)
+    owner = _user(20, UserRole.provider, provider=provider_record)
+    other_provider = _user(21, UserRole.provider, provider=MockProvider(id=201, user_id=21))
+    slot = MockSlot(id=500, provider_id=200, provider=provider_record)
 
-    repo = MockProviderRepository({20: provider_record, 21: other_provider_record})
-    slot = MockSlot(id=500, provider_id=200)
-
-    # Can create slot
-    assert SlotPolicy.can_create(admin, 200, repo) is True
-    assert SlotPolicy.can_create(provider_user, 200, repo) is True
-    assert SlotPolicy.can_create(provider_user, 201, repo) is False  # Cannot create for other provider
-
-    # Can update slot
-    assert SlotPolicy.can_update(admin, slot, repo) is True
-    assert SlotPolicy.can_update(provider_user, slot, repo) is True
-    assert SlotPolicy.can_update(other_provider_user, slot, repo) is False
+    assert SlotOwnershipGuard(owner, slot).passed() is True
+    assert SlotOwnershipGuard(other_provider, slot).passed() is False
 
 
-def test_service_policy():
-    admin = User(id=1, role=UserRole.admin)
-    provider_user = User(id=20, role=UserRole.provider)
-    other_provider_user = User(id=21, role=UserRole.provider)
-
-    provider_record = MockProvider(id=200, user_id=20)
-    other_provider_record = MockProvider(id=201, user_id=21)
-
-    # provider 200 is linked to service 300
-    repo = MockProviderRepository(
-        {20: provider_record, 21: other_provider_record},
-        {200: {300}}
-    )
-    service = MockService(id=300)
-
-    assert ServicePolicy.can_update(admin, service, repo) is True
-    assert ServicePolicy.can_update(provider_user, service, repo) is True
-    assert ServicePolicy.can_update(other_provider_user, service, repo) is False
-
-
-def test_appointment_policy():
-    admin = User(id=1, role=UserRole.admin)
-    front_desk = User(id=2, role=UserRole.front_desk)
-    
-    patient_user = User(id=10, role=UserRole.patient)
-    other_patient_user = User(id=11, role=UserRole.patient)
-    
-    provider_user = User(id=20, role=UserRole.provider)
-    other_provider_user = User(id=21, role=UserRole.provider)
-
+def test_appointment_ownership_guard():
     patient_record = MockPatient(id=100, user_id=10)
-    other_patient_record = MockPatient(id=101, user_id=11)
-    
     provider_record = MockProvider(id=200, user_id=20)
-    other_provider_record = MockProvider(id=201, user_id=21)
+    appointment = MockAppointment(
+        id=1000,
+        patient_id=100,
+        provider_id=200,
+        patient=patient_record,
+        provider=provider_record,
+    )
 
-    patient_repo = MockPatientRepository({10: patient_record, 11: other_patient_record})
-    provider_repo = MockProviderRepository({20: provider_record, 21: other_provider_record})
+    patient_user = _user(10, UserRole.patient, patient=patient_record)
+    other_patient = _user(11, UserRole.patient, patient=MockPatient(id=101, user_id=11))
+    provider_user = _user(20, UserRole.provider, provider=provider_record)
+    other_provider = _user(21, UserRole.provider, provider=MockProvider(id=201, user_id=21))
 
-    appointment = MockAppointment(id=1000, patient_id=100, provider_id=200)
+    assert AppointmentOwnershipGuard(User(id=1, role=UserRole.admin), appointment).passed() is True
+    assert AppointmentOwnershipGuard(patient_user, appointment).passed() is True
+    assert AppointmentOwnershipGuard(other_patient, appointment).passed() is False
+    assert AppointmentOwnershipGuard(provider_user, appointment).passed() is True
+    assert AppointmentOwnershipGuard(other_provider, appointment).passed() is False
 
-    # Admin/front desk can read
-    assert AppointmentPolicy.can_read(admin, appointment, patient_repo, provider_repo) is True
-    assert AppointmentPolicy.can_read(front_desk, appointment, patient_repo, provider_repo) is True
 
-    # Patient owning appointment can read
-    assert AppointmentPolicy.can_read(patient_user, appointment, patient_repo, provider_repo) is True
-    assert AppointmentPolicy.can_read(other_patient_user, appointment, patient_repo, provider_repo) is False
+def test_visit_transition_guard():
+    provider_record = MockProvider(id=200, user_id=20)
+    appointment = MockAppointment(id=1000, patient_id=100, provider_id=200, provider=provider_record)
+    provider_user = _user(20, UserRole.provider, provider=provider_record)
+    other_provider = _user(21, UserRole.provider, provider=MockProvider(id=201, user_id=21))
 
-    # Provider owning appointment can read
-    assert AppointmentPolicy.can_read(provider_user, appointment, patient_repo, provider_repo) is True
-    assert AppointmentPolicy.can_read(other_provider_user, appointment, patient_repo, provider_repo) is False
+    assert VisitTransitionGuard(User(id=1, role=UserRole.admin), appointment, VisitStatus.CHECKED_IN).passed() is True
+    assert VisitTransitionGuard(User(id=2, role=UserRole.front_desk), appointment, VisitStatus.CHECKED_IN).passed() is True
+    assert VisitTransitionGuard(User(id=2, role=UserRole.front_desk), appointment, VisitStatus.IN_PROGRESS).passed() is False
+    assert VisitTransitionGuard(provider_user, appointment, VisitStatus.IN_PROGRESS).passed() is True
+    assert VisitTransitionGuard(other_provider, appointment, VisitStatus.IN_PROGRESS).passed() is False
 
-    # Visit transitions
-    # Admin can transition to CHECKED_IN, IN_PROGRESS, COMPLETED
-    assert AppointmentPolicy.can_transition_visit(admin, appointment, VisitStatus.CHECKED_IN, provider_repo) is True
-    assert AppointmentPolicy.can_transition_visit(admin, appointment, VisitStatus.IN_PROGRESS, provider_repo) is True
-    assert AppointmentPolicy.can_transition_visit(admin, appointment, VisitStatus.COMPLETED, provider_repo) is True
 
-    # Front desk can transition to CHECKED_IN but not IN_PROGRESS
-    assert AppointmentPolicy.can_transition_visit(front_desk, appointment, VisitStatus.CHECKED_IN, provider_repo) is True
-    assert AppointmentPolicy.can_transition_visit(front_desk, appointment, VisitStatus.IN_PROGRESS, provider_repo) is False
+def test_no_show_guard():
+    provider_record = MockProvider(id=200, user_id=20)
+    appointment = MockAppointment(id=1000, patient_id=100, provider_id=200, provider=provider_record)
+    provider_user = _user(20, UserRole.provider, provider=provider_record)
+    other_provider = _user(21, UserRole.provider, provider=MockProvider(id=201, user_id=21))
 
-    # Owning provider can transition anything
-    assert AppointmentPolicy.can_transition_visit(provider_user, appointment, VisitStatus.CHECKED_IN, provider_repo) is True
-    assert AppointmentPolicy.can_transition_visit(provider_user, appointment, VisitStatus.IN_PROGRESS, provider_repo) is True
-    assert AppointmentPolicy.can_transition_visit(provider_user, appointment, VisitStatus.COMPLETED, provider_repo) is True
-
-    # Other provider cannot transition
-    assert AppointmentPolicy.can_transition_visit(other_provider_user, appointment, VisitStatus.IN_PROGRESS, provider_repo) is False
+    assert NoShowGuard(User(id=2, role=UserRole.front_desk), appointment).passed() is True
+    assert NoShowGuard(provider_user, appointment).passed() is True
+    assert NoShowGuard(other_provider, appointment).passed() is False

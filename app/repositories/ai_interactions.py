@@ -1,6 +1,11 @@
+import logging
+
 from app.models import AIInteraction, Appointment, Patient
 from app.repositories.base import BaseRepository
-from sqlalchemy import func
+from sqlalchemy import func, inspect
+from sqlalchemy.exc import SQLAlchemyError
+
+logger = logging.getLogger(__name__)
 
 
 class AIInteractionRepository(BaseRepository):
@@ -11,8 +16,44 @@ class AIInteractionRepository(BaseRepository):
         self.db.refresh(interaction)
         return interaction
 
-    def summary(self) -> dict[str, int | float | dict[str, int]]:
-        rows = self.db.query(AIInteraction).all()
+    def summary(self) -> dict[str, object]:
+        try:
+            if not inspect(self.db.bind).has_table("ai_interactions"):
+                return {
+                    "questions_asked": 0,
+                    "answered_total": 0,
+                    "refused_total": 0,
+                    "refusal_rate": 0.0,
+                    "intent_breakdown": {},
+                    "booking_conversions": 0,
+                    "booking_conversion_rate": 0.0,
+                    "avg_latency_ms": 0.0,
+                    "p95_latency_ms": 0,
+                    "total_tokens_used": 0,
+                    "estimated_cost_total_usd": 0.0,
+                    "interactions_total": 0,
+                    "appointment_navigation_interactions": 0,
+                }
+
+            rows = self.db.query(AIInteraction).all()
+        except SQLAlchemyError:
+            logger.exception("AI analytics summary failed because the AI interaction table is unavailable")
+            return {
+                "questions_asked": 0,
+                "answered_total": 0,
+                "refused_total": 0,
+                "refusal_rate": 0.0,
+                "intent_breakdown": {},
+                "booking_conversions": 0,
+                "booking_conversion_rate": 0.0,
+                "avg_latency_ms": 0.0,
+                "p95_latency_ms": 0,
+                "total_tokens_used": 0,
+                "estimated_cost_total_usd": 0.0,
+                "interactions_total": 0,
+                "appointment_navigation_interactions": 0,
+            }
+
         total = len(rows)
         refused = sum(1 for row in rows if row.refused)
         answered = sum(1 for row in rows if not row.refused)

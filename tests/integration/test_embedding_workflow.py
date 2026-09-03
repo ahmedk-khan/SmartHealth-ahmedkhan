@@ -14,11 +14,20 @@ Tests verify:
 import asyncio
 import datetime
 import hashlib
+import functools
+import os
+
 import pytest
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ.setdefault("REDIS_URL", "memory://")
 
 from app import db as db_module
 from app.core.settings import settings
+from app.db import Base
 from app.models import Service, ServiceStatus, Department, ContentChunk
 from app.repositories import ServiceRepository, ContentChunkRepository
 from app.services.embedding_service import embedding_model_id, generate_embeddings
@@ -33,12 +42,43 @@ from app.workers.temporal.activities.service_publish import (
 )
 
 
-@pytest.fixture
+def _run_async(async_test):
+    """Run async test bodies without requiring pytest-asyncio."""
+
+    @functools.wraps(async_test)
+    def wrapper(*args, **kwargs):
+        return asyncio.run(async_test(*args, **kwargs))
+
+    return wrapper
+
+
+@pytest.fixture()
 def db_session() -> Session:
-    """Provide a fresh database session for each test."""
-    session = db_module.SessionLocal()
-    yield session
-    session.close()
+    """Provide an isolated in-memory database session shared with Temporal activities."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    db_module.engine = engine
+    db_module.SessionLocal = TestingSessionLocal
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+        Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture(autouse=True)
+def low_similarity_threshold(monkeypatch):
+    """Keep semantic search tests deterministic with fake embeddings."""
+    monkeypatch.setattr(settings, "retrieval_min_similarity", 0.0)
 
 
 @pytest.fixture
@@ -47,13 +87,14 @@ def cardiology_dept(db_session: Session) -> Department:
     dept = Department(name="Cardiology", created_at=datetime.datetime.now(datetime.timezone.utc))
     db_session.add(dept)
     db_session.commit()
+    db_session.refresh(dept)
     return dept
 
 
 class TestServicePublishingWithEmbeddings:
     """Test complete publishing workflow with vector embeddings."""
 
-    @pytest.mark.asyncio
+    @_run_async
     async def test_publish_service_generates_embeddings(
         self,
         db_session: Session,
@@ -117,7 +158,7 @@ class TestServicePublishingWithEmbeddings:
             assert chunk.embedding is not None
             assert chunk.content_hash is not None
 
-    @pytest.mark.asyncio
+    @_run_async
     async def test_hash_based_deduplication_skips_reembedding(
         self,
         db_session: Session,
@@ -177,7 +218,7 @@ class TestServicePublishingWithEmbeddings:
 class TestReusingPublishingCleanup:
     """Test re-publishing cleans up stale vectors without orphans."""
 
-    @pytest.mark.asyncio
+    @_run_async
     async def test_republish_deletes_old_vectors_atomic_transaction(
         self,
         db_session: Session,
@@ -260,7 +301,7 @@ class TestReusingPublishingCleanup:
 class TestMetadataFiltering:
     """Test retrieval filters on published + offered services."""
 
-    @pytest.mark.asyncio
+    @_run_async
     async def test_retrieval_filters_withdrawn_services(
         self,
         db_session: Session,
@@ -314,8 +355,10 @@ class TestMetadataFiltering:
         results_before = await search_services(db_session, "heart health", limit=10)
         assert len(results_before) == 2, "Both services should be found before withdrawal"
 
-        # Withdraw one
-        service2.status = ServiceStatus.WITHDRAWN
+        # Withdraw one (refresh first — publish activities use a separate DB session)
+        db_session.refresh(service2)
+        service2.status = ServiceStatus.UNPUBLISHED
+        service2.is_published = False
         db_session.commit()
 
         # Search after withdrawal
@@ -323,7 +366,7 @@ class TestMetadataFiltering:
         assert len(results_after) == 1, "Withdrawn service should be filtered out"
         assert results_after[0]['service_id'] == service1.id, "Only active service should remain"
 
-    @pytest.mark.asyncio
+    @_run_async
     async def test_retrieval_filters_unpublished_chunks(
         self,
         db_session: Session,
@@ -360,6 +403,7 @@ class TestMetadataFiltering:
             source_type="service",
             source_id=service.id,
             chunk_index=0,
+            token_count=1,
             embedding=[0.0] * settings.embedding_dimensions,
             embedding_model=embedding_model_id(),
         )
@@ -378,7 +422,7 @@ class TestMetadataFiltering:
 class TestHybridSearch:
     """Test hybrid search combining vector and keyword matching."""
 
-    @pytest.mark.asyncio
+    @_run_async
     async def test_hybrid_search_returns_both_vector_and_keyword_matches(
         self,
         db_session: Session,
@@ -438,7 +482,7 @@ class TestHybridSearch:
             assert 'combined_score' in result
             assert result['combined_score'] >= 0.0
 
-    @pytest.mark.asyncio
+    @_run_async
     async def test_hybrid_search_boosts_exact_keyword_matches(
         self,
         db_session: Session,
@@ -500,7 +544,7 @@ class TestHybridSearch:
 class TestEmbeddingBatching:
     """Test batching efficiency and correctness."""
 
-    @pytest.mark.asyncio
+    @_run_async
     async def test_embeddings_batched_respects_batch_size(
         self,
         db_session: Session,

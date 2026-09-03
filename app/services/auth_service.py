@@ -1,6 +1,7 @@
 from app.core.exceptions import AppError, ForbiddenError, UnauthorizedError
 from app.core.metrics import record_login_attempt, record_user_registration
 from app.core.security import create_access_token, get_password_hash, verify_password
+from app.core.settings import settings
 from app.repositories import AuthRepository
 from app.schemas.user import Token, UserCreate, UserLogin, UserRead, UserRole
 from app.services.base import BaseService
@@ -16,6 +17,17 @@ class AuthService(BaseService):
     def register(self, user_in: UserCreate) -> UserRead:
         """Register a new user with logging and metrics."""
         self.log_info("User registration attempt", operation="register", data={"email": "[REDACTED]"})
+
+        if user_in.role not in {UserRole.patient, None}:
+            if settings.app_env.lower() not in {"local", "test", "development", "dev"}:
+                self.log_warning(
+                    "Registration failed: only patient accounts may self-register",
+                    operation="register",
+                    data={"role": user_in.role},
+                )
+                raise ForbiddenError(
+                    "Only patient accounts can be created through public registration."
+                )
 
         if user_in.role in {UserRole.admin, UserRole.front_desk}:
             self.log_warning(

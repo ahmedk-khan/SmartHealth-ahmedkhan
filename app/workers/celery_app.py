@@ -65,8 +65,7 @@ def task_prerun(sender=None, task_id=None, task=None, args=None, kwargs=None, **
     Extract correlation ID and request ID from task headers and set them in context.
     This runs before each task execution, establishing correlation context.
     """
-    from app.core.logging import get_correlation_id, get_request_id
-    from app.core.exceptions import generate_request_id
+    from app.core.logging import generate_request_id, get_correlation_id, get_request_id
     
     # Try to get correlation ID and request ID from task headers
     headers = kw.get("headers", {}) or {}

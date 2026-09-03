@@ -165,6 +165,8 @@ The assistant provides intelligent, safety-checked responses to patient and staf
 - `GET /metrics`
   - Prometheus-formatted metrics endpoint
 
+Prometheus is included in Docker Compose and scrapes the API every 15 seconds. With the local stack running, inspect the metrics at `http://localhost:8000/metrics` and confirm the API target is `up` at `http://localhost:9090/targets`. The exported domain counters include `appointments_booked_total`, `double_booking_prevented_total`, `events_consumed_total`, and `events_failed_total`.
+
 - `GET /docs`
   - Swagger UI for API inspection
 
@@ -192,7 +194,6 @@ The assistant provides intelligent, safety-checked responses to patient and staf
 #### Slots
 
 - `POST /api/v1/slots`
-- `POST /api/v1/slots/{slot_id}/reserve`
 - `GET /api/v1/slots`
 
 #### Appointments
@@ -205,6 +206,8 @@ The assistant provides intelligent, safety-checked responses to patient and staf
 - `POST /api/v1/appointments/{appointment_id}/visit/check-in`
 - `POST /api/v1/appointments/{appointment_id}/visit/start`
 - `POST /api/v1/appointments/{appointment_id}/visit/complete`
+
+Patients book an available slot by calling `POST /api/v1/appointments`. The appointment saga validates and reserves the slot internally, so there is no separate slot-reservation step. Patients may join the waitlist when a slot is unavailable.
 
 #### Public catalog
 

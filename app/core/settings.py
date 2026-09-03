@@ -5,6 +5,7 @@ from pydantic import field_validator, model_validator
 
 class Settings(BaseSettings):
     app_env: str = "local"
+    api_version: str = Field(default="1.0.0", alias="API_VERSION")
     build_revision: str = Field(default="development", alias="BUILD_REVISION")
     log_level: str = "INFO"
     database_url: str | None = Field(default=None, alias="DATABASE_URL")
@@ -34,6 +35,8 @@ class Settings(BaseSettings):
     kafka_bootstrap_servers: str = Field(default="localhost:9092", alias="KAFKA_BOOTSTRAP_SERVERS")
     kafka_consumer_group: str = Field(default="app-analytics", alias="KAFKA_CONSUMER_GROUP")
     kafka_topic_prefix: str = Field(default="app", alias="KAFKA_TOPIC_PREFIX")
+    kafka_dlq_topic_suffix: str = Field(default="dlq", alias="KAFKA_DLQ_TOPIC_SUFFIX")
+    kafka_consumer_max_retries: int = Field(default=3, ge=1, alias="KAFKA_CONSUMER_MAX_RETRIES")
     embedding_provider: str = Field(default="huggingface", alias="EMBEDDING_PROVIDER")
     embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
     embedding_model: str = Field(default="microsoft/harrier-oss-v1-0.6b", alias="EMBEDDING_MODEL")
@@ -53,6 +56,9 @@ class Settings(BaseSettings):
     booking_demo_pause_seconds: float = Field(default=0, ge=0, le=300, alias="BOOKING_DEMO_PAUSE_SECONDS")
     async_booking_enabled: bool = Field(default=False, alias="ASYNC_BOOKING_ENABLED")
     booking_workflow_timeout_minutes: int = Field(default=30, ge=1, le=1440, alias="BOOKING_WORKFLOW_TIMEOUT_MINUTES")
+    booking_force_failure: bool = Field(default=False, alias="BOOKING_FORCE_FAILURE")
+    slot_reservation_ttl_minutes: int = Field(default=15, ge=1, alias="SLOT_RESERVATION_TTL_MINUTES")
+    service_publish_stale_minutes: int = Field(default=30, ge=1, alias="SERVICE_PUBLISH_STALE_MINUTES")
     allow_self_service_admin_registration: bool = Field(default=False, alias="ALLOW_SELF_SERVICE_ADMIN_REGISTRATION")
 
     @model_validator(mode="after")

@@ -11,14 +11,14 @@ from dataclasses import dataclass
 class ReservationInput:
     """Input to reserve_slot_activity."""
     slot_id: int
-    user_id: int
+    patient_id: int
 
 
 @dataclass
 class ReservationResult:
     """Output from reserve_slot_activity and release_slot_activity."""
     slot_id: int
-    user_id: int | None
+    patient_id: int | None
     status: str
 
 

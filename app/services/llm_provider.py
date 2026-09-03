@@ -36,7 +36,25 @@ class FakeLLM(LLMProvider):
             yield f"{token} "
 
     async def complete(self, prompt: str) -> str:
-        return self.answer or "Appointment confirmed. Please bring your ID and arrive 10 minutes early."
+        if self.answer:
+            return self.answer
+        lowered = prompt.lower()
+        if "follow-up" in lowered or "follow up" in lowered:
+            return (
+                "Subject: Thank you for your visit\n\n"
+                "Body:\n"
+                "Thank you for visiting our clinic. We appreciate your time today.\n\n"
+                "Next steps:\n"
+                "- Contact us if you have any questions\n"
+                "- Schedule a follow-up appointment if recommended\n"
+            )
+        return (
+            "Your appointment is confirmed.\n\n"
+            "Instructions:\n"
+            "Please arrive 10 minutes early and bring your ID.\n\n"
+            "Cancellation:\n"
+            "24-hour notice is required to cancel or reschedule."
+        )
 
     async def complete_json(self, prompt: str) -> str:
         return (

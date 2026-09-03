@@ -139,8 +139,6 @@ class AppointmentBase(BaseModel):
 
 class AppointmentCreate(BaseModel):
     slot_id: int
-    force_failure: Optional[bool] = None
-    force_billing_failure: Optional[bool] = None
 
     model_config = ConfigDict(extra="forbid")
 

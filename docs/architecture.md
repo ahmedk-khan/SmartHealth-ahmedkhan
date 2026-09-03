@@ -108,6 +108,8 @@ graph TB
 
 ## Request Flow: Appointment Booking
 
+Clients create appointments directly with `POST /appointments`. Slot reservation is an internal step of the appointment saga; clients should not reserve a slot first and then create an appointment. If no slot is available, the waitlist flow is used instead.
+
 ```mermaid
 sequenceDiagram
     participant Client

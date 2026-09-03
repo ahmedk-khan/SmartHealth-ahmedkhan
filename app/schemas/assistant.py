@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -50,6 +51,12 @@ class AssistantAnswer(BaseModel):
     refused: bool = False
 
 
+class AssistantJsonAnswer(BaseModel):
+    answer: str
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    refused: bool = False
+
+
 # Communication & Report Generation Schemas
 
 class AppointmentSummaryRequest(BaseModel):
@@ -98,7 +105,49 @@ class GeneratedContentMetadata(BaseModel):
     created_at: str
 
 
+class AppointmentSummaryResponse(BaseModel):
+    success: bool = True
+    data: AppointmentSummary
+    metadata: GeneratedContentMetadata
+
+
+class AppointmentFollowupResponse(BaseModel):
+    success: bool = True
+    data: AppointmentFollowup
+    metadata: GeneratedContentMetadata
+
+
+class AssistantAskResponse(BaseModel):
+    success: bool = True
+    data: AssistantJsonAnswer
+    request_id: str | None = None
+
+
 class ReportGenerationResponse(BaseModel):
     """Response for report generation with grounded data."""
     report: UtilisationReport
     metadata: GeneratedContentMetadata
+
+
+class ReportJsonResponse(BaseModel):
+    success: bool = True
+    data: UtilisationReport
+    metadata: GeneratedContentMetadata
+
+
+class AIGenerationError(BaseModel):
+    """Structured error returned in SSE `error` and failed `done` events."""
+    type: str
+    message: str
+    code: str
+    request_id: str | None = None
+    detail: Any | None = None
+
+
+class AIGenerationDoneResponse(BaseModel):
+    """Terminal SSE `done` event payload for generation endpoints."""
+    ok: bool
+    content: AppointmentSummary | AppointmentFollowup | None = None
+    report: UtilisationReport | None = None
+    metadata: GeneratedContentMetadata | None = None
+    error: AIGenerationError | None = None

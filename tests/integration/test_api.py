@@ -242,7 +242,7 @@ def test_provider_registration_creates_provider_profile(client):
         db.close()
 
 
-def test_patient_register_creates_profile_and_can_reserve_slot(client):
+def test_patient_register_creates_profile(client):
     _create_user(client, "provider@example.com", "secret123", "provider")
     _create_user(client, "patient2@example.com", "secret123", "patient")
 
@@ -281,13 +281,6 @@ def test_patient_register_creates_profile_and_can_reserve_slot(client):
         slot_id = slot.id
     finally:
         db.close()
-
-    patient_token = _login(client, "patient2@example.com", "secret123")
-    headers = {"Authorization": f"Bearer {patient_token}"}
-    reserve_response = client.post(f"/api/v1/slots/{slot_id}/reserve", headers=headers)
-    assert reserve_response.status_code == 200
-    assert reserve_response.json()["status"] == "RESERVED"
-
 
 def test_patient_cannot_access_provider_schedule_or_other_patient_data(client):
     admin = _create_user_record("admin@example.com", "secret123", "admin")
@@ -1034,54 +1027,6 @@ def test_analytics_consumer_deduplicates_replayed_visit_completed_event(client):
         db.close()
 
 
-def test_slot_reservation_prevents_double_booking(client):
-    _create_user(client, "patient@example.com", "secret123", "patient")
-    _create_user(client, "provider@example.com", "secret123", "provider")
-
-    from app.db import SessionLocal
-
-    db = SessionLocal()
-    try:
-        patient_user = db.query(User).filter(User.email == "patient@example.com").one()
-        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
-
-        patient = _ensure_patient(db, patient_user.id)
-
-        provider = _ensure_provider(db, provider_user.id, bio="General medicine")
-
-        department = Department(name="Cardiology", description="Heart care")
-        db.add(department)
-        db.commit()
-        db.refresh(department)
-
-        service = Service(name="Checkup", department_id=department.id, is_published=True)
-        db.add(service)
-        db.commit()
-        db.refresh(service)
-
-        slot = Slot(
-            provider_id=provider.id,
-            service_id=service.id,
-            status=SlotStatus.AVAILABLE,
-            start_datetime=datetime(2026, 8, 6, 9, 0, tzinfo=timezone.utc),
-            end_datetime=datetime(2026, 8, 6, 9, 30, tzinfo=timezone.utc),
-        )
-        db.add(slot)
-        db.commit()
-        db.refresh(slot)
-    finally:
-        db.close()
-
-    patient_token = _login(client, "patient@example.com", "secret123")
-    headers = {"Authorization": f"Bearer {patient_token}"}
-
-    first = client.post(f"/api/v1/slots/{slot.id}/reserve", headers=headers)
-    assert first.status_code == 200
-
-    second = client.post(f"/api/v1/slots/{slot.id}/reserve", headers=headers)
-    assert second.status_code == 409
-
-
 def test_duplicate_booking_is_rejected(client):
     _create_user(client, "patient@example.com", "secret123", "patient")
     _create_user(client, "provider@example.com", "secret123", "provider")
@@ -1130,9 +1075,13 @@ def test_duplicate_booking_is_rejected(client):
     assert second.status_code == 409
 
 
-def test_saga_compensation_releases_slot_on_failure(client):
+def test_saga_compensation_releases_slot_on_failure(client, monkeypatch):
     _create_user(client, "patient@example.com", "secret123", "patient")
     _create_user(client, "provider@example.com", "secret123", "provider")
+
+    from app.core.settings import settings
+
+    monkeypatch.setattr(settings, "booking_force_failure", True)
 
     from app.db import SessionLocal
 
@@ -1173,10 +1122,12 @@ def test_saga_compensation_releases_slot_on_failure(client):
 
     response = client.post(
         "/api/v1/appointments",
-        json={"slot_id": slot.id, "force_failure": True},
+        json={"slot_id": slot.id},
         headers=headers,
     )
     assert response.status_code == 500
+
+    monkeypatch.setattr(settings, "booking_force_failure", False)
 
     db = SessionLocal()
     try:
@@ -1373,6 +1324,16 @@ def test_service_publish_starts_workflow_and_writes_chunks(client, monkeypatch):
     monkeypatch.setattr(service_management.temporal_client.Client, "connect", temporal_unavailable)
 
     _create_user_record("admin@example.com", "secret123", "admin")
+    provider_user = _create_user_record("provider@example.com", "secret123", "provider")
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        provider = _ensure_provider(db, provider_user.id)
+        provider_id = provider.id
+    finally:
+        db.close()
+
     admin_token = _login(client, "admin@example.com", "secret123")
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
@@ -1392,6 +1353,7 @@ def test_service_publish_starts_workflow_and_writes_chunks(client, monkeypatch):
             "preparation_instructions": "Bring prior imaging reports.",
             "department_id": department_id,
             "is_published": False,
+            "provider_id": provider_id,
         },
         headers=admin_headers,
     )

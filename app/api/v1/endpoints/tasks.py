@@ -1,9 +1,9 @@
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends
-from fastapi import HTTPException
 
 from app.workers.celery_app import celery_app
 from app.core.authorization import require_permission, Permission
+from app.core.exceptions import NotFoundError
 from app.models import User
 from app.core.ai_controls import AIRedisStore, get_ai_redis_store
 
@@ -22,7 +22,7 @@ async def get_task_status(
 ) -> dict[str, object]:
     owner_id = await ai_store.get_task_owner(task_id)
     if owner_id is None or owner_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise NotFoundError("Task not found", code="TASK_NOT_FOUND")
     result = AsyncResult(task_id, app=celery_app)
     response: dict[str, object] = {"task_id": task_id, "state": result.state}
     if result.ready():

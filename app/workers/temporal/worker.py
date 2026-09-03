@@ -66,6 +66,8 @@ def main() -> None:
                     "pathlib",
                     "pydantic",
                     "pydantic_settings",
+                    "prometheus_client",
+                    "app.core.metrics",
                 ),
             ),
             task_queue=settings.temporal_task_queue,

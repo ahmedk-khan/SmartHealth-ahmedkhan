@@ -1,3 +1,24 @@
+"""
+Application-wide error types and HTTP exception handlers.
+
+REST error envelope::
+
+    {
+      "error": {
+        "type": "<machine_category>",
+        "message": "<human_readable>",
+        "code": "<stable_client_code>",
+        "detail": <optional structured context>,
+        "request_id": "<correlation id>"
+      }
+    }
+
+Error code conventions:
+- ``PERMISSION_DENIED`` — role lacks a required permission (RBAC)
+- ``ACCESS_DENIED`` — authenticated but resource/role guard rejected access
+- ``ROLE_ACCESS_DENIED`` — endpoint role requirement not met
+"""
+
 from typing import Any
 import logging
 
@@ -6,7 +27,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from app.core.logging import get_request_id
 
 
@@ -87,6 +108,7 @@ class ConflictError(AppError):
 
 class ForbiddenError(AppError):
     """Exception raised when an action is forbidden."""
+
     def __init__(self, message: str = "Forbidden", code: str = "FORBIDDEN", detail: Any = None):
         super().__init__(
             message=message,
@@ -97,6 +119,20 @@ class ForbiddenError(AppError):
         )
 
 
+class PermissionDeniedError(ForbiddenError):
+    """Role-based permission check failed."""
+
+    def __init__(self, message: str = "Permission denied", detail: Any = None):
+        super().__init__(message=message, code="PERMISSION_DENIED", detail=detail)
+
+
+class AccessDeniedError(ForbiddenError):
+    """Resource or role guard rejected access for an authenticated user."""
+
+    def __init__(self, message: str = "Access denied", detail: Any = None):
+        super().__init__(message=message, code="ACCESS_DENIED", detail=detail)
+
+
 class UnauthorizedError(AppError):
     """Exception raised for authentication failures."""
     def __init__(self, message: str = "Unauthorized", code: str = "UNAUTHORIZED", detail: Any = None):
@@ -104,6 +140,23 @@ class UnauthorizedError(AppError):
             message=message,
             status_code=401,
             error_type="unauthorized",
+            code=code,
+            detail=detail,
+        )
+
+
+class RateLimitError(AppError):
+    """Exception raised when a rate limit is exceeded."""
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded",
+        code: str = "RATE_LIMIT_EXCEEDED",
+        detail: Any = None,
+    ):
+        super().__init__(
+            message=message,
+            status_code=429,
+            error_type="rate_limit_exceeded",
             code=code,
             detail=detail,
         )
@@ -255,12 +308,24 @@ def database_exception_handler(request: Request, exc: SQLAlchemyError) -> JSONRe
             ),
         )
 
+    if isinstance(exc, OperationalError):
+        return JSONResponse(
+            status_code=503,
+            content=format_error_payload(
+                error_type="database_unavailable",
+                message="Database temporarily unavailable",
+                code="DATABASE_UNAVAILABLE",
+                detail=None,
+                request_id=request_id,
+            ),
+        )
+
     return JSONResponse(
-        status_code=500,
+        status_code=503,
         content=format_error_payload(
-            error_type="internal_error",
-            message="An unexpected error occurred",
-            code="INTERNAL_ERROR",
+            error_type="database_unavailable",
+            message="Database temporarily unavailable",
+            code="DATABASE_UNAVAILABLE",
             detail=None,
             request_id=request_id,
         ),

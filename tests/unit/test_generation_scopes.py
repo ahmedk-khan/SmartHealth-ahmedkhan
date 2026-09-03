@@ -3,7 +3,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.models.user import UserRole
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, ForbiddenError
+from app.core.authorization.policies import AppointmentOwnershipGuard
+from app.core.authorization.service import ensure_admin_or_front_desk
 from app.services.communication_service import CommunicationService
 
 
@@ -44,28 +46,22 @@ class TestCommunicationServiceAccess:
 
         assert restored == "Hello Alex, your appointment is with Dr. Smith."
 
-    def test_staff_and_patient_scoping_uses_enum_roles(self):
-        service = CommunicationService.__new__(CommunicationService)
-
+    def test_appointment_access_uses_centralized_guards(self):
         admin = SimpleNamespace(role=UserRole.admin)
         front_desk = SimpleNamespace(role=UserRole.front_desk)
-        provider = SimpleNamespace(role=UserRole.provider)
-        patient = SimpleNamespace(role=UserRole.patient, patient=SimpleNamespace(id=7))
+        provider = SimpleNamespace(role=UserRole.provider, provider=SimpleNamespace(id=3, user_id=30))
+        patient = SimpleNamespace(role=UserRole.patient, patient=SimpleNamespace(id=7, user_id=70))
+        other_patient = SimpleNamespace(role=UserRole.patient, patient=SimpleNamespace(id=99, user_id=99))
 
-        appointment = SimpleNamespace(patient_id=7)
+        appointment = SimpleNamespace(patient_id=7, provider_id=3, patient=patient.patient, provider=provider.provider)
 
-        assert service._user_can_access_appointment(admin, appointment) is True
-        assert service._user_can_access_appointment(front_desk, appointment) is True
-        assert service._user_can_access_appointment(provider, appointment) is True
-        assert service._user_can_access_appointment(patient, appointment) is True
+        assert AppointmentOwnershipGuard(admin, appointment).passed() is True
+        assert AppointmentOwnershipGuard(front_desk, appointment).passed() is True
+        assert AppointmentOwnershipGuard(provider, appointment).passed() is True
+        assert AppointmentOwnershipGuard(patient, appointment).passed() is True
+        assert AppointmentOwnershipGuard(other_patient, appointment).passed() is False
 
-        other_patient = SimpleNamespace(role=UserRole.patient, patient=SimpleNamespace(id=99))
-        assert service._user_can_access_appointment(other_patient, appointment) is False
-
-        assert service._user_is_staff(admin) is True
-        assert service._user_is_staff(front_desk) is True
-        assert service._user_is_staff(provider) is True
-        assert service._user_is_staff(patient) is False
-
-        assert service._user_is_admin(admin) is True
-        assert service._user_is_admin(front_desk) is False
+        ensure_admin_or_front_desk(admin)
+        ensure_admin_or_front_desk(front_desk)
+        with pytest.raises(ForbiddenError):
+            ensure_admin_or_front_desk(provider)

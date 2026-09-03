@@ -71,7 +71,7 @@ def test_publish_embedding_activity_batches_chunks_in_order(monkeypatch):
         return [[float(index)] for index in range(len(texts))]
 
     monkeypatch.setattr(settings, "embedding_batch_size", 2)
-    monkeypatch.setattr(service_publish, "generate_embeddings", fake_generate_embeddings)
+    monkeypatch.setattr("app.services.service_publish_service.generate_embeddings", fake_generate_embeddings)
     chunks = [{"chunk_index": index, "content": f"chunk-{index}"} for index in range(5)]
 
     result = asyncio.run(service_publish.embed_chunks(chunks))
@@ -88,6 +88,7 @@ def test_publish_embedding_activity_reuses_unchanged_chunk(monkeypatch):
 
     from app.db import Base
     from app.models import ContentChunk
+    from app.services.embedding_service import embedding_model_id
     from app.workers.temporal.activities import service_publish
 
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -107,7 +108,7 @@ def test_publish_embedding_activity_reuses_unchanged_chunk(monkeypatch):
         content=unchanged_content,
         token_count=1,
         embedding=[9.0] * 1024,
-        embedding_model=service_publish.embedding_model_id(),
+        embedding_model=embedding_model_id(),
     ))
     session.commit()
 
@@ -117,8 +118,8 @@ def test_publish_embedding_activity_reuses_unchanged_chunk(monkeypatch):
         calls.append(texts)
         return [[2.0] * 1024 for _ in texts]
 
-    monkeypatch.setattr(service_publish.db_module, "SessionLocal", lambda: session)
-    monkeypatch.setattr(service_publish, "generate_embeddings", fake_generate_embeddings)
+    monkeypatch.setattr("app.workers.temporal.activity_session.db_module.SessionLocal", lambda: session)
+    monkeypatch.setattr("app.services.service_publish_service.generate_embeddings", fake_generate_embeddings)
     result = asyncio.run(service_publish.embed_chunks([
         {"service_id": 7, "chunk_index": 0, "content": unchanged_content},
         {"service_id": 7, "chunk_index": 1, "content": "changed"},

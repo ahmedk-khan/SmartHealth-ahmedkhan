@@ -2,6 +2,16 @@ from enum import Enum
 from app.models.user import UserRole
 
 class Permission(str, Enum):
+    # Platform administration
+    ADMIN_MANAGE = "admin:manage"
+
+    # AI capabilities
+    AI_ASSISTANT_USE = "ai:assistant:use"
+    AI_SEARCH_USE = "ai:search:use"
+
+    # Staff communication generation
+    COMMUNICATION_GENERATE = "communication:generate"
+
     # Analytics
     ANALYTICS_READ = "analytics:read"
     ANALYTICS_RECONCILE = "analytics:reconcile"
@@ -57,6 +67,9 @@ class Permission(str, Enum):
 ROLE_PERMISSIONS = {
     UserRole.admin: {p for p in Permission},
     UserRole.front_desk: {
+        Permission.AI_ASSISTANT_USE,
+        Permission.AI_SEARCH_USE,
+        Permission.COMMUNICATION_GENERATE,
         Permission.ANALYTICS_READ,
         Permission.ANALYTICS_RECONCILE,
         Permission.DEPARTMENT_CREATE,
@@ -85,6 +98,8 @@ ROLE_PERMISSIONS = {
         Permission.NOTIFICATION_READ,
     },
     UserRole.provider: {
+        Permission.AI_ASSISTANT_USE,
+        Permission.AI_SEARCH_USE,
         Permission.DEPARTMENT_READ,
         Permission.PATIENT_READ,
         Permission.PROVIDER_CREATE,
@@ -107,6 +122,8 @@ ROLE_PERMISSIONS = {
         Permission.NOTIFICATION_READ,
     },
     UserRole.patient: {
+        Permission.AI_ASSISTANT_USE,
+        Permission.AI_SEARCH_USE,
         Permission.DEPARTMENT_READ,
         Permission.PATIENT_READ,
         Permission.PATIENT_UPDATE,

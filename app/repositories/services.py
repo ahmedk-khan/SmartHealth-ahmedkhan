@@ -42,6 +42,22 @@ class ServiceRepository(BaseRepository):
         self.audit("service", service.id, "publish_failed", after={"status": service.status.value})
         self.commit()
 
+    def recover_stale_publishing(self, service: Service, stale_minutes: int) -> Service:
+        """Mark long-running PUBLISHING services as failed so they can be retried."""
+        if service.status != ServiceStatus.PUBLISHING:
+            return service
+
+        import datetime
+
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=stale_minutes)
+        updated_at = service.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=datetime.timezone.utc)
+        if updated_at < cutoff:
+            self.mark_publish_failed(service)
+            self.refresh(service)
+        return service
+
     def department_exists(self, department_id: int) -> bool:
         return self.db.query(Department).filter(Department.id == department_id).first() is not None
 

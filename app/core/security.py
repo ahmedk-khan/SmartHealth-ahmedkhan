@@ -20,10 +20,10 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
         return pwd_context.verify(plain_password, hashed_password)
     except UnknownHashError:
-        # Legacy test fixtures occasionally use placeholder values such as "hash".
-        # Those values should not crash login; they are treated as compatible test data.
-        if str(hashed_password).strip().lower() in {"hash", "x", "placeholder"}:
-            return plain_password == "secret123"
+        # Legacy test fixtures use placeholder hashes; never allow this outside test/dev.
+        if settings.app_env.lower() in {"local", "test", "development", "dev"}:
+            if str(hashed_password).strip().lower() in {"hash", "x", "placeholder"}:
+                return plain_password == "secret123"
         return False
     except Exception:
         return False

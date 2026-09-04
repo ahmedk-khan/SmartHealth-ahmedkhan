@@ -1,4 +1,4 @@
-.PHONY: up down test infra-test seed lint migrate demo prod-env prod-up prod-down prod-migrate
+.PHONY: up down test infra-test seed seed-users lint migrate demo prod-env prod-up prod-down prod-migrate
 
 up:
 	docker compose up --build
@@ -33,6 +33,9 @@ infra-test:
 
 seed:
 	python -m scripts.seed
+
+seed-users:
+	python -m scripts.seed_users
 
 migrate:
 	alembic upgrade head

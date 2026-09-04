@@ -343,6 +343,12 @@ Sample accounts include:
 - provider@example.com / secret123
 - patient@example.com / secret123
 
+To create only the demo login users without services, providers, slots, or other domain data:
+
+```bash
+docker compose run --rm api python scripts/seed_users.py
+```
+
 ## Testing
 
 Run the test suite with no external dependencies:

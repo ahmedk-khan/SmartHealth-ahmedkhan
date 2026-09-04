@@ -68,8 +68,7 @@ jobs:
               }
               chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
             fi
-            timeout 5m docker builder prune -af || true
-            timeout 5m docker image prune -af || true
+            echo "Docker CLI plugins are ready."
             docker version
             docker compose version
             docker buildx version

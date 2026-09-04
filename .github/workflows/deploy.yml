@@ -60,9 +60,18 @@ jobs:
               chmod +x "$HOME/.docker/cli-plugins/docker-compose"
             fi
             echo "Docker CLI plugins are ready."
-            docker version
-            docker compose version
-            docker compose config --quiet
+            echo "Checking Docker daemon."
+            if ! timeout 30s docker version; then
+              echo "ERROR: Docker daemon did not respond within 30 seconds."
+              systemctl is-active docker || true
+              systemctl status docker --no-pager --full || true
+              ls -l /var/run/docker.sock || true
+              df -h
+              df -i
+              exit 1
+            fi
+            timeout 30s docker compose version
+            timeout 60s docker compose config --quiet
             trap 'docker compose ps --all; docker compose logs --tail=100' ERR
             export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
             echo "Starting Compose deployment for $BUILD_REVISION."

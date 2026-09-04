@@ -62,7 +62,14 @@ jobs:
             echo "Docker CLI plugins are ready."
             echo "Checking Docker daemon."
             if ! timeout 30s docker version; then
-              echo "ERROR: Docker daemon did not respond within 30 seconds."
+                echo "Docker daemon is unresponsive; restarting Docker and cleaning host caches."
+                timeout 60s sudo systemctl restart docker || true
+                timeout 60s sudo journalctl --vacuum-size=200M || true
+                timeout 60s sudo dnf clean all || true
+                timeout 60s docker version || true
+              fi
+              if ! timeout 30s docker version; then
+                echo "ERROR: Docker daemon did not respond after restart."
               systemctl is-active docker || true
               systemctl status docker --no-pager --full || true
               ls -l /var/run/docker.sock || true
@@ -74,6 +81,7 @@ jobs:
             timeout 60s docker compose config --quiet
             trap 'docker compose ps --all; docker compose logs --tail=100' ERR
             export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
+              timeout 3m docker system prune -af || true
             echo "Starting Compose deployment for $BUILD_REVISION."
             if ! timeout --foreground 12m docker compose up -d --build; then
               if docker compose logs kafka 2>&1 | grep -q "InconsistentClusterIdException"; then

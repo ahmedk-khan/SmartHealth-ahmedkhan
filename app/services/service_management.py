@@ -181,6 +181,9 @@ class ServiceManagementService(BaseService):
             raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
         ServiceOwnershipGuard(current_user, service).enforce()
         deleted = self.repository.delete(service)
+        from app.models.service import provider_services
+        self.db.execute(provider_services.delete().where(provider_services.c.service_id == service.id))
+        self.db.commit()
         HealthcareEventService(self.db).publish_service_event(
             "service.deleted",
             service_id=deleted.id,

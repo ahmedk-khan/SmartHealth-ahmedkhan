@@ -140,6 +140,10 @@ class AppointmentBase(BaseModel):
 class AppointmentCreate(BaseModel):
     slot_id: int
 
+
+class AppointmentCancelRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
     model_config = ConfigDict(extra="forbid")
 
 

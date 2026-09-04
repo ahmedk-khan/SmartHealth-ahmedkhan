@@ -144,11 +144,11 @@ class AppointmentRepository(BaseRepository):
     def add_status_history(self, appointment_id: int, status: AppointmentStatus) -> None:
         self.add(AppointmentStatusHistory(appointment_id=appointment_id, status=status))
 
-    def cancel(self, appointment: Appointment) -> Appointment:
+    def cancel(self, appointment: Appointment, *, reason: str | None = None) -> Appointment:
         previous_status = appointment.status.value
         appointment.status = AppointmentStatus.CANCELLED
         appointment.updated_at = datetime.datetime.now(datetime.timezone.utc)
-        self.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
+        self.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status, reason=reason))
         slot = self.db.query(Slot).filter(Slot.id == appointment.slot_id).first()
         if slot:
             slot.status = SlotStatus.AVAILABLE
@@ -187,7 +187,7 @@ class AppointmentRepository(BaseRepository):
                         "waitlist_entry_id": next_entry.id,
                     },
                 )
-            self.audit("appointment", appointment.id, "cancelled", before={"status": previous_status}, after={"status": appointment.status.value})
+            self.audit("appointment", appointment.id, "cancelled", before={"status": previous_status}, after={"status": appointment.status.value, "reason": reason})
         self.commit()
         self.refresh(appointment)
         return appointment
@@ -215,7 +215,7 @@ class AppointmentRepository(BaseRepository):
         appointment.slot_id = new_slot.id
         appointment.provider_id = new_slot.provider_id
         appointment.service_id = new_slot.service_id
-        appointment.status = AppointmentStatus.SLOT_RESERVED
+        appointment.status = AppointmentStatus.CONFIRMED
         appointment.updated_at = now
         self.add(AppointmentStatusHistory(appointment_id=appointment.id, status=appointment.status))
         self.audit("appointment", appointment.id, "rescheduled", before={"slot_id": old_slot.id if old_slot else None}, after={"slot_id": new_slot.id})

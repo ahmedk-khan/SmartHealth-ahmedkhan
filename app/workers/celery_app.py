@@ -26,7 +26,6 @@ celery_app.conf.update(
         "app.workers.celery.appointments",
         "app.workers.celery.analytics",
         "app.workers.celery.outbox",
-        "app.workers.celery.reports",
     ),
     timezone=CELERY_TIMEZONE,
     enable_utc=True,

@@ -65,4 +65,5 @@ def require_permission(permission: Permission) -> Callable[..., User]:
         check_permission(current_user, permission)
         return current_user
 
+    dependency.__required_permission__ = permission.value
     return dependency

@@ -30,6 +30,7 @@ def test_create_app_allows_kafka_unavailable(monkeypatch):
         "settings",
         SimpleNamespace(
             app_env="local",
+            api_version="1.0.0",
             kafka_enabled=True,
             kafka_bootstrap_servers="kafka:29092",
             cors_allowed_origins=[],

@@ -17,7 +17,7 @@ from app.schemas.assistant import (
     AppointmentSummaryRequest,
     AppointmentSummaryResponse,
 )
-from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead, PaginatedResponse, WaitlistEntryRead
+from app.schemas.domain import AppointmentCancelRequest, AppointmentCreate, AppointmentRead, BillingRead, PaginatedResponse, WaitlistEntryRead
 from app.services.appointment_service import AppointmentService
 from app.services.communication_service import CommunicationService
 from app.services.llm_provider import get_llm_provider
@@ -80,8 +80,13 @@ def get_appointment_state(
 
 
 @router.post("/{appointment_id}/cancel", response_model=AppointmentRead)
-def cancel_appointment(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_permission(Permission.APPOINTMENT_CANCEL))):
-    return AppointmentService(db).cancel(appointment_id, current_user)
+def cancel_appointment(
+    appointment_id: int,
+    payload: AppointmentCancelRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.APPOINTMENT_CANCEL)),
+):
+    return AppointmentService(db).cancel(appointment_id, current_user, payload.reason.strip() if payload and payload.reason else None)
 
 
 @router.post("/{appointment_id}/reschedule", response_model=AppointmentRead)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import timedelta
@@ -143,11 +144,11 @@ async def start_appointment_saga(appointment_data: dict[str, Any]):
     except Exception as exc:
         if _local_fallback_allowed():
             logger.info("Temporal unavailable; running appointment saga locally", extra={"appointment_data": appointment_data})
-            result = await _run_appointment_saga_locally(appointment_data)
+            task = asyncio.create_task(_run_appointment_saga_locally(appointment_data))
 
             class _LocalHandle:
                 async def result(self_inner):
-                    return result
+                    return await task
 
             return _LocalHandle()
         raise ExternalServiceError(

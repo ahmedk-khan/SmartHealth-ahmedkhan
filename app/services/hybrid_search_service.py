@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError
 from app.core.settings import settings
-from app.models import ContentChunk, Service
+from app.models import ContentChunk, Service, ServiceStatus
 from app.repositories import ContentChunkRepository
 from app.services.embedding_service import generate_embeddings
 
@@ -195,6 +195,7 @@ class HybridSearchService:
             ContentChunk,
             Service.id == ContentChunk.service_id,
         ).filter(
+            Service.status == ServiceStatus.PUBLISHED,
             Service.is_published.is_(True),
             ContentChunk.published.is_(True),
         ).all()

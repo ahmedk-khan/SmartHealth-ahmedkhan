@@ -68,6 +68,31 @@ flowchart LR
 
 ## Quick start
 
+## Production setup
+
+The repo keeps the original local environment file intact. For production, create a separate environment file instead of editing `.env` directly:
+
+```bash
+copy .env.production.example .env.production
+```
+
+Update the values in `.env.production` with real secrets, hostnames, and credentials. The app is configured to load `.env` and then `.env.production`, so production values can override local defaults without deleting the original environment.
+
+Then run the stack with the production env file:
+
+```bash
+docker compose --env-file .env.production up -d --build
+```
+
+The repo also includes production-ready Make targets:
+
+```bash
+make prod-env
+make prod-up
+make prod-migrate
+make prod-down
+```
+
 ### 1. Start the local environment
 
 ```bash

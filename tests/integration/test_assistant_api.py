@@ -4,6 +4,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -254,6 +255,130 @@ def test_preparation_and_availability_are_grounded_in_real_data(client):
     assert availability_response.status_code == 200
     assert "available slot" in availability_response.text.lower()
     assert "2026-08-10 09:00 UTC" in availability_response.text
+
+
+def test_availability_followup_uses_the_previous_service_topic(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+    patient_token = _login(client, "patient@example.com", "secret123")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+        provider = _ensure_provider(db, provider_user.id, bio="Cardiology")
+        department = Department(name="Cardiology", description="Heart care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+        service = Service(
+            name="Cardiology Consultation",
+            description="Heart consultation for cardiac concerns",
+            preparation_instructions="Bring prior imaging reports.",
+            department_id=department.id,
+            specialty="Cardiology",
+            status=ServiceStatus.PUBLISHED,
+            is_published=True,
+        )
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+    finally:
+        db.close()
+
+    conversation_id = str(uuid4())
+    headers = {"Authorization": f"Bearer {patient_token}"}
+    service_response = client.post(
+        "/assistant/ask",
+        json={"question": "What service do you offer related to heart?", "conversation_id": conversation_id},
+        headers=headers,
+    )
+    assert service_response.status_code == 200
+    assert "Available services:" not in service_response.json()["data"]["answer"]
+
+    availability_response = client.post(
+        "/assistant/ask",
+        json={"question": "Any slots avialbe?", "conversation_id": conversation_id},
+        headers=headers,
+    )
+
+    assert availability_response.status_code == 200
+    assert "Cardiology Consultation" in availability_response.text
+    assert "available slot" in availability_response.text.lower()
+
+
+def test_availability_followup_reuses_recent_retrieved_ids_without_conversation_id(client):
+    _create_user(client, "patient@example.com", "secret123", "patient")
+    _create_user(client, "provider@example.com", "secret123", "provider")
+    patient_token = _login(client, "patient@example.com", "secret123")
+
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        provider_user = db.query(User).filter(User.email == "provider@example.com").one()
+        provider = _ensure_provider(db, provider_user.id, bio="Cardiology")
+        department = Department(name="Cardiology", description="Heart care")
+        db.add(department)
+        db.commit()
+        db.refresh(department)
+        service = Service(
+            name="General Consultation",
+            description="Heart consultations and cardiology OPD",
+            preparation_instructions="Bring prior imaging reports.",
+            department_id=department.id,
+            specialty="Cardiology",
+            status=ServiceStatus.PUBLISHED,
+            is_published=True,
+        )
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+        slot = Slot(
+            provider_id=provider.id,
+            service_id=service.id,
+            status=SlotStatus.AVAILABLE,
+            start_datetime=datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc),
+            end_datetime=datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc),
+        )
+        db.add(slot)
+        db.commit()
+    finally:
+        db.close()
+
+    headers = {"Authorization": f"Bearer {patient_token}"}
+    first = client.post(
+        "/assistant/ask",
+        json={"question": "i want kwno do you offer heart conslulatins explain please"},
+        headers=headers,
+    )
+    assert first.status_code == 200
+    first_payload = first.json()["data"]
+    assert "Available services:" not in first_payload["answer"]
+    assert "General Consultation" in first_payload["answer"] or any(
+        c.get("service_name") == "General Consultation" for c in first_payload["citations"]
+    )
+
+    second = client.post(
+        "/assistant/ask",
+        json={"question": "also any slots avialble"},
+        headers=headers,
+    )
+    assert second.status_code == 200
+    second_answer = second.json()["data"]["answer"]
+    assert "we don't offer that" not in second_answer.lower()
+    assert "General Consultation" in second_answer
+    assert "available slot" in second_answer.lower()
 
 
 def test_assistant_uses_only_the_authenticated_users_appointments(client):

@@ -13,6 +13,8 @@ def test_safety_check_rejects_empty_and_gibberish_input():
     with pytest.raises(AppError):
         safety.normalize("asdfghjklqwerty")
 
+    assert safety.normalize("hi") == "hi"
+
 
 def test_safety_check_flags_medical_and_appointment_intents():
     safety = SafetyCheck()
@@ -28,4 +30,7 @@ def test_safety_check_flags_medical_and_appointment_intents():
     assert specialist.refused is False
     assert specialist.intent == "specialist_navigation"
     assert safety.classify("What is my appointment status?").intent == "appointment"
+    assert safety.classify("Do you know what slots I have booked?").intent == "appointment"
+    assert safety.classify("How can I book?").intent == "booking"
+    assert safety.classify("List down the slots you have available").intent == "availability"
     assert safety.classify("What preparation do I need for the MRI?").intent == "preparation"

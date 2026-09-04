@@ -13,6 +13,7 @@ from app.core.sse import ai_streaming_response, assistant_stream_error, format_s
 from app.models import User
 from app.schemas.assistant import AssistantAskRequest, AssistantAskResponse, AssistantJsonAnswer
 from app.services.assistant_service import AssistantService
+from app.services.safety_service import EMERGENCY_MESSAGE
 from app.core.ai_controls import AIRedisStore, get_ai_redis_store
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
@@ -94,7 +95,7 @@ async def ask_assistant_stream(
 
         try:
             if decision.refused:
-                refusal = service._refusal_message(decision.acute)
+                refusal = EMERGENCY_MESSAGE if decision.hard_blocked else service._refusal_message(decision.acute)
                 persistence_task = asyncio.create_task(
                     service.persist_safety_refusal(normalized_question, current_user, decision)
                 )

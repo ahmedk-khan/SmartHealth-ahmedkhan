@@ -59,7 +59,7 @@ class ServiceManagementService(BaseService):
         if not service:
             raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
         # Patients can only see published services
-        if current_user.role == UserRole.patient and not service.is_published:
+        if current_user.role == UserRole.patient and not service.published:
             raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
         self.log_info(
             "Service fetched",
@@ -174,6 +174,20 @@ class ServiceManagementService(BaseService):
         unpublished = self.repository.unpublish(service)
         HealthcareEventService(self.db).publish_service_event("service.unpublished", service_id=unpublished.id, department_id=unpublished.department_id, status=unpublished.status.value)
         return unpublished
+
+    def delete_service(self, service_id: int, current_user: User):
+        service = self.repository.get_by_id(service_id)
+        if not service:
+            raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
+        ServiceOwnershipGuard(current_user, service).enforce()
+        deleted = self.repository.delete(service)
+        HealthcareEventService(self.db).publish_service_event(
+            "service.deleted",
+            service_id=deleted.id,
+            department_id=deleted.department_id,
+            status=deleted.status.value,
+        )
+        return deleted
 
     async def publish_status(self, service_id: int, current_user: User):
         service = self.repository.get_by_id(service_id)

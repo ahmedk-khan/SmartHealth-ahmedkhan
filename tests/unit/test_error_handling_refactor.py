@@ -142,13 +142,13 @@ def test_database_exception_masking(caplog):
     with caplog.at_level(logging.ERROR):
         response = client.get("/error/database")
     
-    assert response.status_code == 500
+    assert response.status_code == 503
     payload = response.json()
     assert "error" in payload
     err = payload["error"]
-    assert err["type"] == "internal_error"
-    assert err["message"] == "An unexpected error occurred"
-    assert err["code"] == "INTERNAL_ERROR"
+    assert err["type"] == "database_unavailable"
+    assert err["message"] == "Database temporarily unavailable"
+    assert err["code"] == "DATABASE_UNAVAILABLE"
     assert "request_id" in err
     
     # Assert database details are masked and not returned in JSON

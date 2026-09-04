@@ -1,4 +1,4 @@
-.PHONY: up down test infra-test seed lint migrate demo
+.PHONY: up down test infra-test seed lint migrate demo prod-env prod-up prod-down prod-migrate
 
 up:
 	docker compose up --build
@@ -8,6 +8,22 @@ down:
 
 demo:
 	docker compose up --build
+
+prod-env:
+	@echo "Create a production env file from .env.production.example if needed:"
+	@echo "copy .env.production.example .env.production"
+
+prod-up:
+	@echo "Starting production stack using .env.production"
+	@docker compose --env-file .env.production up -d --build
+
+prod-down:
+	@echo "Stopping production stack"
+	@docker compose --env-file .env.production down
+
+prod-migrate:
+	@echo "Running production migrations"
+	@docker compose --env-file .env.production run --rm migrate
 
 test:
 	python -m pytest -q

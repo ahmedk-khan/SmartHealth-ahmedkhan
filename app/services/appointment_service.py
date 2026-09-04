@@ -20,6 +20,7 @@ from app.repositories import AppointmentRepository, PatientRepository, ProviderR
 from app.schemas.domain import AppointmentCreate, AppointmentRead, BillingRead
 from app.services.base import BaseService
 from app.services.healthcare_event_service import HealthcareEventService
+from app.services.notification_service import NotificationService
 
 if TYPE_CHECKING:
     from app.services.adapters import WorkflowOrchestratorAdapter
@@ -236,7 +237,7 @@ class AppointmentService(BaseService):
         items, total = self.appointments.list_scoped(patient_id=patient_id, provider_id=provider_id, limit=limit, offset=offset)
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
-    def cancel(self, appointment_id: int, current_user: User):
+    def cancel(self, appointment_id: int, current_user: User, reason: str | None = None):
         """Cancel an appointment."""
         self.log_info("Appointment cancellation request", operation="cancel_appointment", data={"appointment_id": appointment_id, "user_id": current_user.id})
         
@@ -246,6 +247,9 @@ class AppointmentService(BaseService):
             raise NotFoundError("Appointment not found", code="APPOINTMENT_NOT_FOUND")
 
         self._authorize(appointment, current_user)
+
+        if current_user.role in {UserRole.provider, UserRole.front_desk} and not reason:
+            raise AppError("A cancellation reason is required for staff cancellations", status_code=422, error_type="cancellation_reason_required")
 
         if appointment.status in {AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED}:
             self.log_warning("Cannot cancel terminal appointment", operation="cancel_appointment", data={"appointment_id": appointment_id, "status": appointment.status.value})
@@ -259,7 +263,11 @@ class AppointmentService(BaseService):
         except Exception as exc:
             self.log_error("Failed to record cancellation metric", operation="cancel_appointment", data={"error": str(exc)})
         
-        cancelled = self.appointments.cancel(appointment)
+        cancelled = self.appointments.cancel(appointment, reason=reason)
+
+        reminder = NotificationService(self.db).notifications.get_reminder(appointment.id)
+        if reminder is not None:
+            NotificationService(self.db).cancel_notification(reminder.id)
         
         self.events.publish_appointment_event(
             "appointment.cancelled",

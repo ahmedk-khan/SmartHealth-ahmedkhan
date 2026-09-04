@@ -107,7 +107,7 @@ class TestAIAssistantMedicalAdviceRefusal:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "Diagnose me: I have knee pain"},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -122,7 +122,7 @@ class TestAIAssistantMedicalAdviceRefusal:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "What medication should I take for my headache?"},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -136,7 +136,7 @@ class TestAIAssistantMedicalAdviceRefusal:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "What treatment cures my disease?"},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -163,7 +163,7 @@ class TestAIAssistantPHIScoping:
         token = _login(client_with_fake_llm, "alice@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "What is my full name?"},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -179,7 +179,7 @@ class TestAIAssistantPHIScoping:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "What is my blood type?"},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -237,7 +237,7 @@ class TestAIAssistantPHIScoping:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "What services do you offer?"},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -255,7 +255,7 @@ class TestAIAssistantMalformedInput:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "   "},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -268,7 +268,7 @@ class TestAIAssistantMalformedInput:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "asdfghjklqwerty"},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -311,7 +311,7 @@ class TestAIAssistantStreamingShape:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "What services are available?"},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -325,7 +325,7 @@ class TestAIAssistantStreamingShape:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "Tell me about cardiology services"},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -340,14 +340,14 @@ class TestAIAssistantStreamingShape:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "What services are available?"},
             headers={"Authorization": f"Bearer {token}"},
         )
         
         assert response.status_code == 200
         assert "event: done" in response.text
-        assert response.text.rstrip().endswith("event: done")
+        assert response.text.rstrip().split("\n\n")[-1].startswith("event: done")
     
     def test_streaming_contains_citations_when_applicable(self, client_with_fake_llm):
         """Stream should include citations event when available."""
@@ -355,7 +355,7 @@ class TestAIAssistantStreamingShape:
         token = _login(client_with_fake_llm, "patient@example.com", "secret123")
         
         response = client_with_fake_llm.post(
-            "/assistant/ask",
+            "/assistant/ask/stream",
             json={"question": "What services are available?"},
             headers={"Authorization": f"Bearer {token}"},
         )

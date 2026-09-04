@@ -44,6 +44,7 @@ class Permission(str, Enum):
     SERVICE_CREATE = "service:create"
     SERVICE_READ = "service:read"
     SERVICE_UPDATE = "service:update"
+    SERVICE_DELETE = "service:delete"
     SERVICE_PUBLISH = "service:publish"
     SERVICE_UNPUBLISH = "service:unpublish"
 
@@ -88,6 +89,7 @@ ROLE_PERMISSIONS = {
         Permission.SERVICE_CREATE,
         Permission.SERVICE_READ,
         Permission.SERVICE_UPDATE,
+        Permission.SERVICE_DELETE,
         Permission.SERVICE_PUBLISH,
         Permission.SERVICE_UNPUBLISH,
         Permission.APPOINTMENT_READ,
@@ -112,6 +114,7 @@ ROLE_PERMISSIONS = {
         Permission.SERVICE_CREATE,
         Permission.SERVICE_READ,
         Permission.SERVICE_UPDATE,
+        Permission.SERVICE_DELETE,
         Permission.SERVICE_PUBLISH,
         Permission.SERVICE_UNPUBLISH,
         Permission.APPOINTMENT_READ,

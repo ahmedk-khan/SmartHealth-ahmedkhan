@@ -53,7 +53,9 @@ def _service(provider, store):
     service.provider = provider
     service.ai_store = store
     service.safety = __import__("app.services.safety_service", fromlist=["SafetyCheck"]).SafetyCheck()
+    service.slots = SimpleNamespace(list_by_service=lambda *args, **kwargs: ([], 0))
     service._persist_interaction = AsyncMock()
+    service._prior_retrieved_service_ids = AsyncMock(return_value=[])
     return service
 
 
@@ -136,6 +138,27 @@ def test_provider_failure_emits_safe_structured_ai_error(monkeypatch):
             "code": "AI_PIPELINE_UNAVAILABLE",
         },
     }]
+
+
+def test_no_match_navigation_uses_provider_for_conversation(monkeypatch):
+    provider = RecordingProvider()
+    service = _service(provider, MemoryAIStore())
+
+    async def no_results(*args):
+        return []
+
+    monkeypatch.setattr("app.services.assistant_service.search_services", no_results)
+
+    async def run():
+        return [event async for event in service.stream_answer("Hi, can you help me?", _user())]
+
+    events = asyncio.run(run())
+    answer = "".join(event["value"] for event in events if event["type"] == "text")
+
+    assert provider.prompts
+    assert "Hi, can you help me?" in provider.prompts[0]
+    assert answer == "grounded answer"
+    assert "we don't offer that" not in answer.lower()
 
 
 def test_production_requires_embedding_api_key(monkeypatch):

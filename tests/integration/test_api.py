@@ -771,7 +771,7 @@ def test_appointment_saga_endpoints_create_state_cancel_and_reschedule(client):
         headers=patient_headers,
     )
     assert reschedule_response.status_code == 200
-    assert reschedule_response.json()["status"] == "SLOT_RESERVED"
+    assert reschedule_response.json()["status"] == "CONFIRMED"
 
     cancel_response = client.post(f"/api/v1/appointments/{appointment_id}/cancel", headers=patient_headers)
     assert cancel_response.status_code == 200

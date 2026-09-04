@@ -97,9 +97,10 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         extra="ignore",
-        env_file=".env",
+        validate_by_name=True,
+        validate_by_alias=True,
         env_file_encoding="utf-8",
     )
 
 
-settings = Settings()
+settings = Settings(_env_file=(".env", ".env.production"))

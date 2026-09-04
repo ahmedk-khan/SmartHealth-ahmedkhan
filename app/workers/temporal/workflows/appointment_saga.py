@@ -144,19 +144,21 @@ class AppointmentSagaWorkflow:
                 )
             raise
 
-        created = await workflow.execute_activity(
-            create_pending_appointment,
-            {**appointment_data, **validated},
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=TRANSIENT_ACTIVITY_RETRY,
-        )
-        appointment_id = created["appointment_id"]
-        await workflow.execute_activity(
-            mark_slot_reserved,
-            {**appointment_data, "appointment_id": appointment_id},
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=TRANSIENT_ACTIVITY_RETRY,
-        )
+        appointment_id = appointment_data.get("appointment_id")
+        if appointment_id is None:
+            created = await workflow.execute_activity(
+                create_pending_appointment,
+                {**appointment_data, **validated},
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=TRANSIENT_ACTIVITY_RETRY,
+            )
+            appointment_id = created["appointment_id"]
+            await workflow.execute_activity(
+                mark_slot_reserved,
+                {**appointment_data, "appointment_id": appointment_id},
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=TRANSIENT_ACTIVITY_RETRY,
+            )
 
         try:
             await workflow.execute_activity(

@@ -97,8 +97,21 @@ class ServiceRepository(BaseRepository):
         self.refresh(service)
         return service
 
+    def delete(self, service: Service) -> Service:
+        """Soft-delete a service by removing it from the published catalog."""
+        service.status = ServiceStatus.UNPUBLISHED
+        service.is_published = False
+        self.add(service)
+        self.audit("service", service.id, "deleted", after={"status": service.status.value, "is_published": False})
+        self.commit()
+        self.refresh(service)
+        return service
+
     def list_published(self, offset: int, limit: int, search: str | None = None, department_id: int | None = None) -> tuple[list[Service], int]:
-        query = self.db.query(Service).filter(Service.is_published.is_(True))
+        query = self.db.query(Service).filter(
+            Service.status == ServiceStatus.PUBLISHED,
+            Service.is_published.is_(True),
+        )
         if search:
             query = query.filter(Service.name.ilike(f"%{search}%"))
         if department_id is not None:

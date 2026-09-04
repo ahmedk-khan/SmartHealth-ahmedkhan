@@ -30,8 +30,37 @@ class FakeLLM(LLMProvider):
     def __init__(self, answer: str | None = None) -> None:
         self.answer = answer
 
+    def _answer_from_prompt(self, prompt: str) -> str:
+        """Build a grounded navigation reply from the catalog context in the prompt."""
+        import re
+
+        match = re.search(
+            r"\[([^\]]+)\]\s*([^.]+)\.\s*(.*?)(?:Available appointments:\s*(.+?))?(?:\n---|\n\nPatient question|$)",
+            prompt,
+            flags=re.S,
+        )
+        if not match:
+            return (
+                "Based on the available clinic services, please choose the service that best "
+                "matches your appointment needs."
+            )
+
+        department = match.group(1).strip()
+        service_name = " ".join(match.group(2).split())
+        content = " ".join((match.group(3) or "").split()).strip()
+        slots = " ".join((match.group(4) or "").split()).strip().rstrip(".")
+
+        answer = f"Yes — we offer {service_name} in {department}."
+        if content:
+            answer += f" {content.rstrip('.')}."
+        if slots and slots.lower() != "no available slots currently":
+            answer += f" Next openings include: {slots}."
+        elif slots:
+            answer += " There are no available appointment slots for this service right now."
+        return answer
+
     async def stream(self, prompt: str) -> AsyncIterator[str]:
-        answer = self.answer or "Based on the available clinic services, please choose the service that best matches your appointment needs."
+        answer = self.answer or self._answer_from_prompt(prompt)
         for token in answer.split():
             yield f"{token} "
 

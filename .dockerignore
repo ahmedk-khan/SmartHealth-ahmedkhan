@@ -1,5 +1,6 @@
 __pycache__
 *.pyc
 .env
+.env.production
 .git
 #docker ignore file

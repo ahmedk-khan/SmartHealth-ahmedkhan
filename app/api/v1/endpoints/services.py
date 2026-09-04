@@ -72,6 +72,20 @@ def unpublish_service(
     return svc.unpublish_service(service_id, current_user)
 
 
+@router.delete(
+    "/{service_id}",
+    response_model=ServiceRead,
+    summary="Delete service",
+    description="Removes a service from the catalog by automatically unpublishing it while preserving its history.",
+)
+def delete_service(
+    service_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.SERVICE_DELETE)),
+):
+    return ServiceManagementService(db).delete_service(service_id, current_user)
+
+
 @router.get(
     "/{service_id}/publish-status",
     summary="Get publish status",

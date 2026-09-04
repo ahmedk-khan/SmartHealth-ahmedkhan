@@ -99,6 +99,7 @@ class Settings(BaseSettings):
         extra="ignore",
         validate_by_name=True,
         validate_by_alias=True,
+        env_file=(".env", ".env.production"),
         env_file_encoding="utf-8",
     )
 

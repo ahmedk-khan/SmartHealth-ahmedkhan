@@ -1,0 +1,47 @@
+name: Deploy Backend to EC2
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Deploy to EC2 over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: GH_TOKEN,EC2_ENV_FILE
+          script: |
+            set -e
+            AUTH_HEADER="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
+            if [ -d "$HOME/app/.git" ]; then
+              cd "$HOME/app"
+              git -c http.extraheader="$AUTH_HEADER" pull --ff-only origin main
+            elif [ ! -e "$HOME/app" ]; then
+              git -c http.extraheader="$AUTH_HEADER" clone https://github.com/iahmedd-k/smarthealth.git "$HOME/app"
+              cd "$HOME/app"
+            else
+              echo "ERROR: $HOME/app exists but is not a Git checkout."
+              exit 1
+            fi
+            if [ -n "${EC2_ENV_FILE:-}" ]; then
+              printf '%s\n' "$EC2_ENV_FILE" > .env
+              chmod 600 .env
+            fi
+            test -f .env || { echo "ERROR: $HOME/app/.env is missing."; exit 1; }
+            mkdir -p "$HOME/.docker/cli-plugins"
+            curl -fsSL https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64 \
+              -o "$HOME/.docker/cli-plugins/docker-buildx"
+            chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+            docker buildx version
+            docker compose down
+            docker compose up -d --build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EC2_ENV_FILE: ${{ secrets.EC2_ENV_FILE }}

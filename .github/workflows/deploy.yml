@@ -36,6 +36,8 @@ jobs:
               chmod 600 .env
             fi
             test -f .env || { echo "ERROR: $HOME/app/.env is missing."; exit 1; }
+            BUILD_REVISION=$(git rev-parse HEAD)
+            printf '\nBUILD_REVISION=%s\n' "$BUILD_REVISION" >> .env
             mkdir -p "$HOME/.docker/cli-plugins"
             case "$(uname -m)" in
               x86_64) DOCKER_ARCH=amd64; COMPOSE_ARCH=x86_64 ;;
@@ -73,6 +75,18 @@ jobs:
                 exit 1
               fi
             fi
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              deployed_revision=$(curl -fsS http://127.0.0.1:8000/health/version 2>/dev/null | sed -n 's/.*"build_revision":"\([^"]*\)".*/\1/p' || true)
+              if [ "$deployed_revision" = "$BUILD_REVISION" ]; then
+                echo "Deployment verified at revision $BUILD_REVISION."
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "ERROR: API did not report deployed revision $BUILD_REVISION."
+            docker compose ps --all
+            docker compose logs api --tail=100
+            exit 1
         env:
           GH_TOKEN: ${{ github.token }}
           EC2_ENV_FILE: ${{ secrets.EC2_ENV_FILE }}

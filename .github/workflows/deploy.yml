@@ -3,6 +3,13 @@ name: Deploy Backend to EC2
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      reset_instance:
+        description: "Delete all Docker data and volumes on the EC2 demo host"
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   deploy:
@@ -17,7 +24,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 30m
-          envs: GH_TOKEN,EC2_ENV_FILE,DEPLOY_REPOSITORY
+          envs: GH_TOKEN,EC2_ENV_FILE,DEPLOY_REPOSITORY,RESET_INSTANCE
           script: |
             set -e
             AUTH_HEADER="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
@@ -81,7 +88,11 @@ jobs:
             timeout 60s docker compose config --quiet
             trap 'docker compose ps --all; docker compose logs --tail=100' ERR
             export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
-              timeout 3m docker system prune -af || true
+            if [ "${RESET_INSTANCE:-false}" = "true" ]; then
+              echo "DESTRUCTIVE RESET: removing all Docker containers, images, caches, networks, and volumes."
+              timeout 60s docker compose down --volumes --remove-orphans || true
+              timeout 5m docker system prune -af --volumes
+            fi
             echo "Starting Compose deployment for $BUILD_REVISION."
             if ! timeout --foreground 12m docker compose up -d --build; then
               if docker compose logs kafka 2>&1 | grep -q "InconsistentClusterIdException"; then
@@ -120,3 +131,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EC2_ENV_FILE: ${{ secrets.EC2_ENV_FILE }}
           DEPLOY_REPOSITORY: ${{ github.repository }}
+          RESET_INSTANCE: ${{ inputs.reset_instance && 'true' || 'false' }}

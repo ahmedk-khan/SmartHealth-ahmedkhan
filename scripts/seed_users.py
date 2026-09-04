@@ -2,7 +2,7 @@
 
 from app.core.security import get_password_hash
 from app.db import SessionLocal
-from app.models import UserRole
+from app.models import User, UserRole
 from app.repositories import AuthRepository
 
 
@@ -20,7 +20,14 @@ def seed_users() -> None:
     repository = AuthRepository(db)
     try:
         for email, password, role in DEMO_USERS:
-            repository.ensure_seed_user(email, get_password_hash(password), role)
+            user = repository.get_user_by_email(email)
+            if user is None:
+                user = User(email=email, is_active=True)
+                db.add(user)
+            user.hashed_password = get_password_hash(password)
+            user.role = role
+            user.is_active = True
+        db.commit()
     finally:
         db.close()
 

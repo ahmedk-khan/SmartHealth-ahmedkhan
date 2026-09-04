@@ -45,12 +45,30 @@ jobs:
               aarch64|arm64) DOCKER_ARCH=arm64; COMPOSE_ARCH=aarch64 ;;
               *) echo "ERROR: Unsupported EC2 architecture: $(uname -m)"; exit 1 ;;
             esac
-            curl -fsSL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-${COMPOSE_ARCH}" \
-              -o "$HOME/.docker/cli-plugins/docker-compose"
-            chmod +x "$HOME/.docker/cli-plugins/docker-compose"
-            curl -fsSL "https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-${DOCKER_ARCH}" \
-              -o "$HOME/.docker/cli-plugins/docker-buildx"
-            chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+            if ! docker compose version >/dev/null 2>&1; then
+              rm -f "$HOME/.docker/cli-plugins/docker-compose"
+              curl --fail --silent --show-error --location \
+                "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-${COMPOSE_ARCH}" \
+                -o "$HOME/.docker/cli-plugins/docker-compose" || {
+                df -h
+                df -i
+                exit 1
+              }
+              chmod +x "$HOME/.docker/cli-plugins/docker-compose"
+            fi
+            if ! docker buildx version >/dev/null 2>&1; then
+              rm -f "$HOME/.docker/cli-plugins/docker-buildx"
+              curl --fail --silent --show-error --location \
+                "https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-${DOCKER_ARCH}" \
+                -o "$HOME/.docker/cli-plugins/docker-buildx" || {
+                df -h
+                df -i
+                exit 1
+              }
+              chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+            fi
+            docker builder prune -af || true
+            docker image prune -af || true
             docker version
             docker compose version
             docker buildx version

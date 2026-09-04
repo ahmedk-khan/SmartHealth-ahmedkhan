@@ -74,7 +74,7 @@ jobs:
                 exit 1
               fi
             fi
-            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            for attempt in $(seq 1 60); do
               deployed_revision=$(curl -fsS http://127.0.0.1:8000/health/version 2>/dev/null | sed -n 's/.*"build_revision":"\([^"]*\)".*/\1/p' || true)
               readiness=$(curl -fsS http://127.0.0.1:8000/health/ready 2>/dev/null || true)
               if [ "$deployed_revision" = "$BUILD_REVISION" ] && printf '%s' "$readiness" | grep -q '"status":"ready"'; then

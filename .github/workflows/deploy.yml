@@ -55,7 +55,6 @@ jobs:
             docker buildx version
             docker compose config --quiet
             trap 'docker compose ps --all; docker compose logs --tail=100' ERR
-            docker compose down
             export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
             if ! docker compose up -d --build; then
               if docker compose logs kafka 2>&1 | grep -q "InconsistentClusterIdException"; then
@@ -77,8 +76,9 @@ jobs:
             fi
             for attempt in 1 2 3 4 5 6 7 8 9 10; do
               deployed_revision=$(curl -fsS http://127.0.0.1:8000/health/version 2>/dev/null | sed -n 's/.*"build_revision":"\([^"]*\)".*/\1/p' || true)
-              if [ "$deployed_revision" = "$BUILD_REVISION" ]; then
-                echo "Deployment verified at revision $BUILD_REVISION."
+              readiness=$(curl -fsS http://127.0.0.1:8000/health/ready 2>/dev/null || true)
+              if [ "$deployed_revision" = "$BUILD_REVISION" ] && printf '%s' "$readiness" | grep -q '"status":"ready"'; then
+                echo "Deployment verified at revision $BUILD_REVISION with all dependencies ready."
                 exit 0
               fi
               sleep 5

@@ -41,37 +41,27 @@ jobs:
             printf '\nBUILD_REVISION=%s\n' "$BUILD_REVISION" >> .env
             mkdir -p "$HOME/.docker/cli-plugins"
             case "$(uname -m)" in
-              x86_64) DOCKER_ARCH=amd64; COMPOSE_ARCH=x86_64 ;;
-              aarch64|arm64) DOCKER_ARCH=arm64; COMPOSE_ARCH=aarch64 ;;
+              x86_64) COMPOSE_ARCH=x86_64 ;;
+              aarch64|arm64) COMPOSE_ARCH=aarch64 ;;
               *) echo "ERROR: Unsupported EC2 architecture: $(uname -m)"; exit 1 ;;
             esac
             echo "Checking Docker CLI plugins."
-            if ! timeout 30s docker compose version >/dev/null 2>&1; then
-              rm -f "$HOME/.docker/cli-plugins/docker-compose"
-              curl --fail --silent --show-error --location --connect-timeout 15 --max-time 120 \
+            if ! timeout 15s docker compose version >/dev/null 2>&1; then
+              compose_tmp="$HOME/.docker/cli-plugins/docker-compose.tmp.$$"
+              rm -f "$compose_tmp"
+              curl --fail --silent --show-error --location --connect-timeout 10 --max-time 45 \
                 "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-${COMPOSE_ARCH}" \
-                -o "$HOME/.docker/cli-plugins/docker-compose" || {
+                -o "$compose_tmp" || {
                 df -h
                 df -i
                 exit 1
               }
+              mv "$compose_tmp" "$HOME/.docker/cli-plugins/docker-compose"
               chmod +x "$HOME/.docker/cli-plugins/docker-compose"
-            fi
-            if ! timeout 30s docker buildx version >/dev/null 2>&1; then
-              rm -f "$HOME/.docker/cli-plugins/docker-buildx"
-              curl --fail --silent --show-error --location --connect-timeout 15 --max-time 120 \
-                "https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-${DOCKER_ARCH}" \
-                -o "$HOME/.docker/cli-plugins/docker-buildx" || {
-                df -h
-                df -i
-                exit 1
-              }
-              chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
             fi
             echo "Docker CLI plugins are ready."
             docker version
             docker compose version
-            docker buildx version
             docker compose config --quiet
             trap 'docker compose ps --all; docker compose logs --tail=100' ERR
             export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"

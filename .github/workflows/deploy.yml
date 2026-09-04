@@ -45,9 +45,10 @@ jobs:
               aarch64|arm64) DOCKER_ARCH=arm64; COMPOSE_ARCH=aarch64 ;;
               *) echo "ERROR: Unsupported EC2 architecture: $(uname -m)"; exit 1 ;;
             esac
-            if ! docker compose version >/dev/null 2>&1; then
+            echo "Checking Docker CLI plugins."
+            if ! timeout 30s docker compose version >/dev/null 2>&1; then
               rm -f "$HOME/.docker/cli-plugins/docker-compose"
-              curl --fail --silent --show-error --location \
+              curl --fail --silent --show-error --location --connect-timeout 15 --max-time 120 \
                 "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-${COMPOSE_ARCH}" \
                 -o "$HOME/.docker/cli-plugins/docker-compose" || {
                 df -h
@@ -56,9 +57,9 @@ jobs:
               }
               chmod +x "$HOME/.docker/cli-plugins/docker-compose"
             fi
-            if ! docker buildx version >/dev/null 2>&1; then
+            if ! timeout 30s docker buildx version >/dev/null 2>&1; then
               rm -f "$HOME/.docker/cli-plugins/docker-buildx"
-              curl --fail --silent --show-error --location \
+              curl --fail --silent --show-error --location --connect-timeout 15 --max-time 120 \
                 "https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-${DOCKER_ARCH}" \
                 -o "$HOME/.docker/cli-plugins/docker-buildx" || {
                 df -h
@@ -67,8 +68,8 @@ jobs:
               }
               chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
             fi
-            docker builder prune -af || true
-            docker image prune -af || true
+            timeout 5m docker builder prune -af || true
+            timeout 5m docker image prune -af || true
             docker version
             docker compose version
             docker buildx version

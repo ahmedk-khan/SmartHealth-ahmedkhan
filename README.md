@@ -346,7 +346,7 @@ Sample accounts include:
 To create only the demo login users without services, providers, slots, or other domain data:
 
 ```bash
-docker compose run --rm api python scripts/seed_users.py
+docker compose run --rm api python -m scripts.seed_users
 ```
 
 ## Testing

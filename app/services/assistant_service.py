@@ -2,9 +2,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
-from datetime import timezone
+from datetime import datetime, timezone
 from uuid import UUID
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -17,7 +18,7 @@ from app.core.logging import get_correlation_id
 from app.core.metrics import record_ai_cache_hit, record_ai_interaction
 from app.core.settings import settings
 from app.core.sse import assistant_stream_error, error_payload
-from app.models import User
+from app.models import User, UserRole
 from app.repositories import AIInteractionRepository, AppointmentRepository, GeneratedContentRepository, PatientRepository, ProviderRepository, ServiceRepository, SlotRepository
 from app.services.assistant_prompts import DISCLAIMER, PROMPT_NAV_V1, PROMPT_VERSION_ASSISTANT, PROMPT_VERSION_REPORT
 from app.services.llm_provider import LLMProvider, get_llm_provider
@@ -557,30 +558,55 @@ class AssistantService:
             asyncio.to_thread(self.patients.get_by_user_id, user.id),
             asyncio.to_thread(self.providers.get_by_user_id, user.id),
         )
-        if patient is None and provider is None:
-            return "I can only discuss appointments linked to your own account.", [], []
-
-        if patient is not None:
+        if user.role == UserRole.patient and patient is not None:
             appointments, _ = await asyncio.to_thread(
-                self.appointments.list_scoped, patient_id=patient.id, limit=5, offset=0
+                self.appointments.list_scoped, patient_id=patient.id, limit=10, offset=0
             )
+            scope_label = "your"
+        elif user.role == UserRole.provider and provider is not None:
+            appointments, _ = await asyncio.to_thread(
+                self.appointments.list_scoped, provider_id=provider.id, limit=10, offset=0
+            )
+            scope_label = "your assigned"
+        elif user.role in {UserRole.admin, UserRole.front_desk}:
+            appointments, _ = await asyncio.to_thread(
+                self.appointments.list_scoped, limit=10, offset=0
+            )
+            scope_label = "clinic"
         else:
-            appointments, _ = await asyncio.to_thread(
-                self.appointments.list_scoped, provider_id=provider.id, limit=5, offset=0
-            )
+            return "I could not find an appointment profile linked to your account.", [], []
 
         if not appointments:
-            return "I could not find any appointments on your account.", [], []
+            return f"I could not find any {scope_label} appointments.", [], []
 
         items: list[str] = []
         retrieved_ids: list[int] = []
+        now = datetime.now(timezone.utc)
+        upcoming_only = bool(re.search(r"\b(upcoming|future|next)\b", question, re.I))
         for appointment in appointments[:3]:
-            retrieved_ids.append(appointment.id)
             slot = appointment.slot
-            scheduled = slot.start_datetime.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if slot and slot.start_datetime else "an unknown time"
+            start_time = slot.start_datetime if slot else None
+            comparable_start = start_time
+            if comparable_start is not None and comparable_start.tzinfo is None:
+                comparable_start = comparable_start.replace(tzinfo=timezone.utc)
+            if upcoming_only and (comparable_start is None or comparable_start < now):
+                continue
+            retrieved_ids.append(appointment.id)
+            scheduled = start_time.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if start_time else "an unknown time"
+            service_name = appointment.service.name if appointment.service else "service"
+            patient_name = " ".join(filter(None, [appointment.patient.first_name, appointment.patient.last_name])) if appointment.patient else "patient"
+            provider_name = " ".join(filter(None, [appointment.provider.first_name, appointment.provider.last_name])) if appointment.provider else "provider"
+            people = ""
+            if user.role in {UserRole.admin, UserRole.front_desk}:
+                people = f" for {patient_name} with {provider_name}"
+            elif user.role == UserRole.patient:
+                people = f" with {provider_name}"
             items.append(
-                f"Appointment {appointment.id} with {appointment.service.name if appointment.service else 'your service'} is {appointment.status.value} for {scheduled}."
+                f"Appointment {appointment.id}{people}: {service_name}, scheduled for {scheduled}, "
+                f"booking status {appointment.status.value}, visit status {appointment.visit_status.value}."
             )
+        if not items:
+            return "I could not find any upcoming appointments.", [], []
         answer = " ".join(items)
         citations = [{"appointment_id": appointment_id} for appointment_id in retrieved_ids]
         return answer, citations, retrieved_ids

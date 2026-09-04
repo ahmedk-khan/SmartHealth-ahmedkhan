@@ -59,6 +59,16 @@ appointments_created_total = Counter(
     "Total appointments created",
 )
 
+appointments_booked_total = Counter(
+    "appointments_booked_total",
+    "Total appointments successfully booked",
+)
+
+double_booking_prevented_total = Counter(
+    "double_booking_prevented_total",
+    "Total booking attempts rejected because the slot was unavailable",
+)
+
 appointments_cancelled_total = Counter(
     "appointments_cancelled_total",
     "Total appointments cancelled",
@@ -162,6 +172,72 @@ celery_task_duration_seconds = Histogram(
 )
 
 # ============================================================================
+# Domain Metrics: Events
+# ============================================================================
+
+events_consumed_total = Counter(
+    "events_consumed_total",
+    "Total analytics events successfully consumed",
+    ["topic"],
+)
+
+events_failed_total = Counter(
+    "events_failed_total",
+    "Total analytics events that failed processing",
+    ["topic", "error_type"],
+)
+
+# ============================================================================
+# AI Metrics
+# ============================================================================
+
+ai_requests_total = Counter("ai_requests_total", "AI interactions by intent and outcome", ["intent", "outcome"])
+ai_refusals_total = Counter("ai_refusals_total", "AI safety refusals", ["intent"])
+ai_cache_hits_total = Counter("ai_cache_hits_total", "AI answer cache hits")
+ai_request_duration_seconds = Histogram("ai_request_duration_seconds", "AI interaction latency", ["intent"])
+ai_input_tokens_total = Counter("ai_input_tokens_total", "Estimated AI input tokens", ["intent"])
+ai_output_tokens_total = Counter("ai_output_tokens_total", "Estimated AI output tokens", ["intent"])
+ai_booking_conversions = Gauge("ai_booking_conversions", "Bookings associated with AI appointment navigation")
+ai_booking_conversion_rate = Gauge("ai_booking_conversion_rate", "Appointment conversion rate from AI appointment navigation")
+
+
+def record_ai_interaction(intent: str, outcome: str, latency_seconds: float, input_tokens: int, output_tokens: int, refused: bool) -> None:
+    try:
+        ai_requests_total.labels(intent=intent, outcome=outcome).inc()
+        ai_request_duration_seconds.labels(intent=intent).observe(latency_seconds)
+        ai_input_tokens_total.labels(intent=intent).inc(input_tokens)
+        ai_output_tokens_total.labels(intent=intent).inc(output_tokens)
+        if refused:
+            ai_refusals_total.labels(intent=intent).inc()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record AI metrics", exc_info=True)
+
+
+def record_ai_cache_hit() -> None:
+    try:
+        ai_cache_hits_total.inc()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record AI cache metric", exc_info=True)
+
+
+def set_ai_booking_conversions(value: int) -> None:
+    try:
+        ai_booking_conversions.set(value)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record AI booking conversion count", exc_info=True)
+
+
+def set_ai_booking_conversion_rate(value: float) -> None:
+    try:
+        ai_booking_conversion_rate.set(value)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record AI booking conversion rate", exc_info=True)
+
+# ============================================================================
 # Utility Functions
 # ============================================================================
 
@@ -223,6 +299,40 @@ def record_appointment_created() -> None:
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Failed to record appointment creation metric: {exc}", exc_info=True)
+
+
+def record_appointment_booked() -> None:
+    """Record a successfully completed appointment booking."""
+    try:
+        appointments_booked_total.inc()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("Failed to record appointment booking metric", exc_info=True)
+
+
+def record_double_booking_prevented() -> None:
+    """Record a booking rejected because its slot was already unavailable."""
+    try:
+        double_booking_prevented_total.inc()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("Failed to record double-booking metric", exc_info=True)
+
+
+def record_event_consumed(topic: str) -> None:
+    try:
+        events_consumed_total.labels(topic=topic).inc()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record consumed event metric", exc_info=True)
+
+
+def record_event_failed(topic: str, error_type: str) -> None:
+    try:
+        events_failed_total.labels(topic=topic, error_type=error_type).inc()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Failed to record failed event metric", exc_info=True)
 
 
 def record_appointment_cancelled() -> None:

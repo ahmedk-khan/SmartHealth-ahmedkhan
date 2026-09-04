@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run Ruff
+        run: make lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Install mypy
+        run: python -m pip install mypy
+      # New addition - tune strictness with the team before enabling stricter checks.
+      - name: Run permissive mypy
+        run: >-
+          mypy app
+          --ignore-missing-imports
+          --follow-imports=skip
+          --allow-untyped-defs
+          --allow-untyped-globals
+          --no-strict-optional
+          --no-warn-return-any
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run tests
+        run: make test
+
+  dependency-security:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install project dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Install security reporting tools
+        run: python -m pip install pip-audit cyclonedx-bom
+      - name: Audit dependencies
+        run: pip-audit --requirement requirements.txt --format json --output pip-audit.json
+      - name: Add audit report to job summary
+        if: always()
+        run: |
+          echo '## pip-audit report' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f pip-audit.json ]; then
+            jq . pip-audit.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'pip-audit did not produce a report.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Generate CycloneDX SBOM
+        if: always()
+        run: cyclonedx-py requirements requirements.txt --output-format JSON --output-file sbom.json
+      - name: Upload dependency security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-reports
+          path: |
+            pip-audit.json
+            sbom.json
+          if-no-files-found: warn

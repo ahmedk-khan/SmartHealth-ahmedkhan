@@ -71,7 +71,7 @@ class ServiceBase(BaseModel):
 
 
 class ServiceCreate(ServiceBase):
-    pass
+    provider_id: Optional[int] = None
 
 
 class ServiceRead(ServiceBase):
@@ -140,7 +140,11 @@ class AppointmentBase(BaseModel):
 class AppointmentCreate(BaseModel):
     slot_id: int
 
-    model_config = ConfigDict(extra="allow")
+
+class AppointmentCancelRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class AppointmentRead(AppointmentBase):
@@ -213,6 +217,19 @@ class PatientRead(PatientBase):
     email: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class NotificationRead(BaseModel):
+    id: int
+    user_id: int
+    type: str
+    payload: Optional[dict] = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    sent_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 

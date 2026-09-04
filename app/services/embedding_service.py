@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import math
 import re
 from abc import ABC, abstractmethod
@@ -8,6 +9,8 @@ import httpx
 
 from app.core.exceptions import AppError
 from app.core.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingProvider(ABC):
@@ -27,6 +30,7 @@ def _parse_embedding_response(response: Any) -> list[list[float]]:
         "Embedding provider returned an unsupported response",
         status_code=502,
         error_type="embedding_provider_error",
+        code="EMBEDDING_PROVIDER_ERROR",
     )
 
 
@@ -43,6 +47,7 @@ def _validate_embeddings(embeddings: list[list[float]], texts: list[str], dimens
             "Embedding provider returned vectors with unexpected dimensions",
             status_code=502,
             error_type="embedding_dimensions_invalid",
+            code="EMBEDDING_DIMENSIONS_INVALID",
         )
     return embeddings
 
@@ -84,11 +89,12 @@ class HuggingFaceEmbeddingProvider(EmbeddingProvider):
                 response = await client.post(url, headers=headers, json={"inputs": texts})
                 response.raise_for_status()
         except httpx.HTTPError as exc:
+            logger.exception("HuggingFace embedding provider request failed", extra={"model": self.model})
             raise AppError(
                 "Embedding provider request failed",
                 status_code=502,
                 error_type="embedding_provider_unavailable",
-                detail=str(exc),
+                code="EMBEDDING_PROVIDER_UNAVAILABLE",
             ) from exc
         return _validate_embeddings(_parse_embedding_response(response.json()), texts, self.dimensions)
 
@@ -96,6 +102,15 @@ class HuggingFaceEmbeddingProvider(EmbeddingProvider):
 def get_embedding_provider() -> EmbeddingProvider:
     api_key = _configured_api_key()
     if not api_key:
+        environment = settings.app_env.lower()
+        if environment not in {"local", "test", "development", "dev"}:
+            raise AppError(
+                "EMBEDDING_API_KEY must be configured outside local and test environments",
+                status_code=503,
+                error_type="embedding_provider_not_configured",
+                code="EMBEDDING_PROVIDER_NOT_CONFIGURED",
+            )
+        logger.warning("Using deterministic FakeEmbeddings in %s environment", environment)
         return FakeEmbeddings()
     provider = settings.embedding_provider.split("#", 1)[0].strip().lower()
     if provider != "huggingface":
@@ -103,8 +118,10 @@ def get_embedding_provider() -> EmbeddingProvider:
             f"Unsupported embedding provider: {settings.embedding_provider}",
             status_code=503,
             error_type="embedding_provider_not_configured",
+            code="EMBEDDING_PROVIDER_NOT_CONFIGURED",
         )
     return HuggingFaceEmbeddingProvider(api_key, settings.embedding_model, settings.embedding_dimensions)
+
 
 def embedding_model_id() -> str:
     """Return the identity stored with vectors so providers cannot be mixed."""

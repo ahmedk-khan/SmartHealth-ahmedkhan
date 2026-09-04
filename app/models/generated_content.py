@@ -10,6 +10,8 @@ class GeneratedContent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True, index=True)
+    initiated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    correlation_id = Column(String(255), nullable=True, index=True)
     report_scope = Column(String(255), nullable=True)
     type = Column(String(100), nullable=False)
     content = Column(JSON, nullable=False)

@@ -1,8 +1,203 @@
-# AI Layer: Embeddings and Vector Similarity
+# AI Layer: Assistant, Safety, Embeddings, and Vector Search
 
-An embedding is a numeric representation of text that captures useful aspects of its meaning. An embedding model reads a sentence or document chunk and maps it to a point in a fixed-dimensional vector space. Texts with related meaning tend to be placed near one another, even when they do not share the same words. For example, a query about “heart specialist availability” may be close to a service description that says “cardiology appointments,” while a keyword-only search might miss that relationship.
+## Healthcare Assistant
 
-SmartHealth can use this representation for semantic retrieval over approved service descriptions, clinical guidance, or other indexed content. During ingestion, long documents should be split into reasonably sized, slightly overlapping chunks. Each chunk is sent to the configured embedding model and stored with its vector plus metadata such as source, department, document version, and access scope. At query time, the user’s question is embedded with the same model. The system compares that query vector with stored vectors and returns the highest-scoring matches. The current configuration targets `sentence-transformers/all-MiniLM-L6-v2`, which produces 384-dimensional embeddings, with a target chunk size of 600 tokens and 80-token overlap.
+The AI assistant provides intelligent, safety-checked answers to healthcare-related questions while protecting patient privacy and preventing harmful medical advice.
+
+### Endpoint Access Matrix
+
+| Endpoint | Patient | Provider | Front desk | Admin |
+| --- | --- | --- | --- | --- |
+| `POST /assistant/ask` | Yes, own appointments only | Yes, own provider scope | Yes | Yes |
+| `POST /search` | Yes, published services only | Yes | Yes | Yes |
+| `POST /api/v1/appointments/{id}/generate/summary` | No | No | Yes | Yes |
+| `POST /api/v1/appointments/{id}/generate/followup` | No | No | Yes | Yes |
+| `POST /api/v1/reports/generate/utilisation` | No | No | Yes | Yes |
+| `GET /api/v1/tasks/{task_id}` | No | No | Yes, own task | Yes, own task |
+| `GET /api/v1/analytics/ai` | No | No | Yes | Yes |
+
+Authentication is required for all AI routes, and generation/report routes use
+the `ANALYTICS_READ` or staff-only permission boundary. Patient appointment
+answers are filtered by the authenticated patient; provider appointment answers
+are limited to appointments associated with that provider.
+
+### Business Users and Workflows
+
+These endpoints are backend capabilities normally called by the web application,
+not routes that every user is expected to call directly:
+
+| Business need | Endpoint | Primary users | Practical use |
+| --- | --- | --- | --- |
+| Patient self-service | `POST /assistant/ask` | Patient, provider, staff | Find offered services, preparation information, availability, or the caller's own appointments. |
+| Service discovery | `POST /search` | Patient, provider, staff | Search the published service catalog when the UI needs matching services and citations. |
+| Visit communication | `POST /api/v1/appointments/{id}/generate/summary` | Front desk, admin | Prepare a patient-facing appointment summary or confirmation message. |
+| Follow-up communication | `POST /api/v1/appointments/{id}/generate/followup` | Front desk, admin | Draft a post-visit or appointment follow-up message. |
+| Operational reporting | `POST /api/v1/reports/generate/utilisation` | Front desk, admin | Generate a utilization report for a selected date range immediately. |
+| Report status | `GET /api/v1/tasks/{task_id}` | Front desk, admin | Retrieve a queued report owned by the requesting staff user. |
+| Operational dashboard | `GET /api/v1/analytics/summary` | Front desk, admin | View booking, visit, cancellation, and utilization metrics. |
+| AI monitoring | `GET /api/v1/analytics/ai` | Front desk, admin | Monitor assistant request, refusal, latency, and cache metrics. |
+
+Providers use the normal appointment, slot, and visit endpoints to manage care
+operations. They can use the assistant for their own provider-scoped appointment
+questions, but generated appointment summaries, follow-ups, utilization reports,
+and analytics are intentionally restricted to front-desk and admin staff.
+
+### Safety Architecture
+
+All user questions pass through a **SafetyService** that:
+
+1. **Normalizes input**: validates length (2-2000 chars), removes excess whitespace, checks for gibberish
+2. **Classifies intent**: determines question type (appointment, preparation, availability, medical advice, general navigation)
+3. **Detects medical advice**: refuses diagnosis, medication, treatment, or symptom questions with automatic escalation for acute conditions
+
+```python
+# Classification outcomes:
+- intent: "appointment", "preparation", "availability", "navigation", "utilisation_report"
+- refused: True/False (medical advice, diagnosis, symptom requests)
+- acute: True/False (detected emergency language like "urgent", "bleeding", "can't breathe")
+```
+
+If medical advice is detected, the assistant immediately returns a standardized refusal message with a disclaimer, regardless of LLM availability. The refusal is persisted with `refused=True` in the database for audit and training purposes.
+
+### PHI Protection
+
+Protected Health Information (PHI) is scoped at multiple layers:
+
+1. **Question hashing**: user questions are stored as SHA-256 hashes, not plaintext
+2. **Response redaction**: user-scoped appointment details are redacted as `[USER_SCOPED_CONTENT_REDACTED]`
+3. **Retrieval filtering**: search results exclude patient, billing, and authentication tables; only approved service-catalog fields are returned
+4. **Field blacklisting**: response filtering blocks known PHI terms (patient name, email, phone, DOB, medical history)
+
+### Answer Routing
+
+After safety checks pass, the assistant routes to specialized handlers:
+
+- **Appointment intent**: queries user's own appointment history from the database
+- **Preparation intent**: searches service catalog for preparation instructions
+- **Availability intent**: checks and reports available slots
+- **Navigation intent**: performs semantic search over service descriptions, caches results for identical queries
+- **General navigation**: default fallback; semantic search + LLM synthesis
+
+### Streaming and Caching
+
+Responses stream Server-Sent Events (SSE) for real-time display:
+
+```
+event: text
+data: response token
+
+event: text
+data: another token
+
+event: citations
+data: [{"service_id": 1, ...}]
+
+event: done
+data: null
+```
+
+For navigation queries, Redis caches complete answers using a SHA-256 key built from the normalized question, authenticated user scope, model identifier, and prompt version, with TTL `AI_CACHE_TTL_SECONDS`. Service-listing queries bypass the cache so catalog changes are reflected immediately.
+
+### Error Handling and Timeouts
+
+The stream is protected by `asyncio.timeout(LLM_TIMEOUT_SECONDS)`. If the LLM or retrieval exceeds the timeout:
+
+1. Partial answer (accumulated tokens) is logged
+2. A timeout message is sent to the client
+3. The interaction is persisted with the partial answer for audit
+
+### Interaction Logging
+
+Every interaction is recorded in the `AIInteraction` table:
+
+| Field | Description |
+| --- | --- |
+| `user_id` | User making the request |
+| `question` | SHA-256 hash of the normalized question |
+| `intent` | Classified intent (appointment, preparation, etc.) |
+| `answer` | Full or partial response (redacted for user-scoped content) |
+| `refused` | True if medical advice was detected |
+| `cache_hit` | True if answer was cached |
+| `model` | LLM model used (e.g., gpt-4o-mini) |
+| `latency_ms` | End-to-end response time |
+| `input_tokens` | Estimated input token count |
+| `output_tokens` | Estimated output token count |
+| `retrieved_ids` | Service IDs included in context |
+| `prompt_version` | Version of the prompt template used |
+
+This enables audit trails, performance analysis, and safety monitoring.
+
+### Prompts and Safe Transcripts
+
+Prompt templates are versioned in `app/services/assistant_prompts.py`. The safety
+classifier runs before retrieval and uses `PROMPT_SAFETY_V1` as the provider
+contract for model-backed classification where configured. Navigation and report
+generation use `PROMPT_NAV_V1` and `PROMPT_VERSION_REPORT`; the persisted
+`prompt_version` identifies the template used for each generated result.
+
+Raw questions and clinical conversation text are not retained as transcripts.
+Questions are stored as SHA-256 hashes, appointment answers are redacted, and
+interaction reconstruction uses the correlation ID, intent, and retrieved
+service or appointment IDs. A safe transcript therefore contains only the
+request hash, refusal status, source IDs, token counts, latency, and final
+metadata. For example:
+
+```text
+request: sha256:<question-hash>
+intent: medical_advice
+refused: true
+retrieved_ids: []
+correlation_id: <request-correlation-id>
+```
+
+### Failure Modes
+
+- **Safety refusal:** medical advice and acute symptom requests are refused
+	before embeddings, retrieval, or LLM calls. The interaction is still logged.
+- **No grounded match:** the assistant returns `we don't offer that` and emits
+	empty citations rather than inventing a service.
+- **Provider timeout or outage:** bounded timeout and retry handling returns a
+	clear provider-unavailable response while preserving the interaction record.
+- **Malformed report output:** structured report parsing is retried once with a
+	repair instruction, then fails cleanly if the output remains invalid.
+- **Redis unavailable:** cache and rate-limit operations degrade gracefully;
+	core booking and assistant processing remain available where possible.
+- **Client disconnect:** partial generated output and interaction metadata are
+	persisted before the stream cancellation is re-raised.
+
+### Testing Without External LLM
+
+Local development and CI/CD use a **FakeLLM** that requires no network or API keys:
+
+- Deterministic responses based on question content
+- Routes to different response types (medical, appointment, preparation, availability, navigation)
+- Simulates streaming and tokenization
+- Enables full test suite to run offline
+
+Tests cover:
+
+- Medical advice refusal and safety
+- PHI scoping (no sensitive data in responses)
+- Malformed input rejection (empty, gibberish, oversized)
+- Streaming response format (SSE, text events, citations, done)
+- Report schema validation
+- Caching behavior
+- Error paths and timeouts
+
+Run tests with:
+
+```bash
+pytest tests/unit/test_ai_layer_comprehensive.py -v
+pytest tests/unit/test_assistant_safety.py -v
+```
+
+---
+
+## Embeddings and Vector Similarity
+
+An embedding is a numeric representation of text that captures useful aspects of its meaning. An embedding model reads a sentence or document chunk and maps it to a point in a fixed-dimensional vector space. Texts with related meaning tend to be placed near one another, even when they do not share the same words. For example, a query about "heart specialist availability" may be close to a service description that says "cardiology appointments," while a keyword-only search might miss that relationship.
+
+SmartHealth can use this representation for semantic retrieval over approved service descriptions, clinical guidance, or other indexed content. During ingestion, long documents should be split into reasonably sized, slightly overlapping chunks. Each chunk is sent to the configured embedding model and stored with its vector plus metadata such as source, department, document version, and access scope. At query time, the user's question is embedded with the same model. The system compares that query vector with stored vectors and returns the highest-scoring matches. The current configuration targets `sentence-transformers/all-MiniLM-L6-v2`, which produces 384-dimensional embeddings, with a target chunk size of 600 tokens and 80-token overlap.
 
 A common comparison is cosine similarity. It measures the angle between two vectors rather than their raw length: vectors pointing in nearly the same direction receive a high score, while unrelated directions receive a lower score. A vector index can use this score to perform nearest-neighbor search. For a small collection, exact comparison is practical; for a large collection, an approximate nearest-neighbor index such as HNSW can return results quickly while accepting that an occasional perfect match may be missed. `RETRIEVAL_TOP_K=5` limits the initial result set, and `RETRIEVAL_MIN_SIMILARITY=0.65` provides a minimum relevance gate. That threshold is a starting point, not a universal measure of correctness, so it should be calibrated against representative queries and reviewed whenever the model or corpus changes.
 
@@ -29,7 +224,8 @@ Persistence is handled by `ContentChunkRepository`, not by the embedding provide
 
 ## Service Search
 
-`POST /search` and `POST /api/v1/search` accept `{"query": "...", "limit": 5}` and require authentication. The endpoint caps the requested limit at `RETRIEVAL_TOP_K`, ranks candidates by cosine similarity, and omits results below `RETRIEVAL_MIN_SIMILARITY`. Only the highest-scoring chunk per service is returned.
+`POST /search` accepts `{"query": "...", "limit": 5}` and requires authentication. The endpoint caps the requested limit at `RETRIEVAL_TOP_K`, ranks candidates by cosine similarity, and omits results below `RETRIEVAL_MIN_SIMILARITY`. Only the highest-scoring chunk per service is returned.
+This endpoint also streams results as Server-Sent Events (SSE), providing real-time updates to clients.
 
 Search requires both the stored chunk flag `published=true` and the live service flag `is_published=true`. This prevents stale or unpublished vectors from being returned after catalog changes. Results contain only approved service-catalog fields: `service_id`, `service_name`, `score`, `department`, `specialty`, and chunk content. Patient, appointment, billing, authentication, and other PHI-bearing tables are not joined or returned. Authentication is enforced by the API dependency, while service filtering is enforced in the repository layer.
 

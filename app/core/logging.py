@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
 _CORRELATION_ID: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 _REQUEST_ID: ContextVar[str | None] = ContextVar("request_id", default=None)
+
+
+def generate_request_id() -> str:
+    return str(uuid.uuid4())
 
 _PHI_KEYWORDS = (
     "name",
@@ -166,9 +171,10 @@ def configure_logging(level: int = logging.INFO) -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
     
-    # Remove existing handlers
+    # Remove existing handlers (preserving pytest capture handlers)
     for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
+        if handler.__class__.__name__ != "LogCaptureHandler":
+            root_logger.removeHandler(handler)
     
     # Add stream handler with JSON formatter
     stream_handler = logging.StreamHandler()

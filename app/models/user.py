@@ -9,9 +9,13 @@ from app.db import Base
 
 class UserRole(str, Enum):
     patient = "patient"
+    PATIENT = "patient"
     provider = "provider"
+    PROVIDER = "provider"
     front_desk = "front_desk"
+    FRONT_DESK = "front_desk"
     admin = "admin"
+    ADMIN = "admin"
 
 
 class User(Base):

@@ -1,13 +1,11 @@
-from fastapi import FastAPI
+"""
+SmartHealth Application Package
 
-app = FastAPI(title="app")
+Exports critical core modules to enable clean circular-dependency-free imports:
+  from app import db              # Direct access to database session factory
+  from app.db import SessionLocal # Explicit database session import
+"""
 
+from app import db
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/")
-def root():
-    return {"message": "app api is running"}
+__all__ = ["db"]

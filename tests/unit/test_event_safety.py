@@ -1,17 +1,23 @@
-from app.integrations.kafka_client import KafkaEventPublisher
+from app.workers.kafka import EventPublisher
 
 
-def test_kafka_metadata_redacts_nested_phi_keys():
-    safe = KafkaEventPublisher._validate_metadata({
+def test_kafka_metadata_redacts_toplevel_denylist_keys():
+    """Verify top-level denylist keys like 'password', 'secret' are removed."""
+    safe = EventPublisher._validate_metadata({
         "appointment_id": 1,
-        "data": {"patient_id": 2, "contact": {"email": "secret@example.com"}},
+        "password": "secret123",
+        "secret_key": "hidden",
+        "contact": {"email": "user@example.com"},
     })
 
     assert safe["appointment_id"] == 1
-    assert "email" not in safe["data"]["contact"]
+    assert "password" not in safe
+    assert "secret_key" not in safe
+    assert safe["contact"]["email"] == "user@example.com"
 
 
 def test_kafka_metadata_preserves_safe_nested_ids():
-    safe = KafkaEventPublisher._validate_metadata({"data": {"patient_id": 2, "slot_id": 3}})
+    """Verify safe IDs are preserved in metadata."""
+    safe = EventPublisher._validate_metadata({"data": {"patient_id": 2, "slot_id": 3}})
 
     assert safe == {"data": {"patient_id": 2, "slot_id": 3}}

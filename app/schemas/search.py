@@ -15,7 +15,18 @@ class SearchResult(BaseModel):
     content: str
 
 
+class PatientContextSummary(BaseModel):
+    """Summary of patient's appointment history (PHI-scoped)."""
+    patient_id: int
+    appointment_count: int
+    recent_appointments: list[dict] = []
+    active_appointments: list[dict] = []
+
+
 class SearchResponse(BaseModel):
     query: str
     results: list[SearchResult]
+    min_similarity_used: float | None = None
+    results_count: int = 0
+    patient_context: PatientContextSummary | None = None
     message: str | None = None

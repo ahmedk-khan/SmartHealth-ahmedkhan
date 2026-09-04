@@ -34,7 +34,7 @@ This document describes the structured JSON logging system implemented across Sm
 - **task_failure**: Logs task failures with correlation context
 - All Celery task logs include correlation context
 
-#### 4. **Temporal Activity Logging** (`app/workflows/temporal_logging.py`)
+#### 4. **Temporal Activity Logging** (`app/workers/temporal/logging.py`)
 - Activities receive correlation_id and request_id in their input data
 - `setup_activity_context()`: Extracts and sets correlation context for activities
 - `log_activity_step()`: Logs activity steps with correlation context

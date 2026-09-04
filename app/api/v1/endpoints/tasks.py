@@ -1,10 +1,11 @@
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends
 
-from app.celery_app import celery_app
-from app.core.dependencies import get_current_user
-from app.core.exceptions import AppError
+from app.workers.celery_app import celery_app
+from app.core.authorization import require_permission, Permission
+from app.core.exceptions import NotFoundError
 from app.models import User
+from app.core.ai_controls import AIRedisStore, get_ai_redis_store
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -14,9 +15,14 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
     summary="Get task status",
     description="Checks the status of a background Celery task and returns its final or in-progress result when available.",
 )
-def get_task_status(task_id: str, current_user: User = Depends(get_current_user)) -> dict[str, object]:
-    if current_user.role.value not in {"admin", "front_desk"}:
-        raise AppError("Forbidden", status_code=403, error_type="forbidden")
+async def get_task_status(
+    task_id: str,
+    current_user: User = Depends(require_permission(Permission.TASK_READ)),
+    ai_store: AIRedisStore = Depends(get_ai_redis_store),
+) -> dict[str, object]:
+    owner_id = await ai_store.get_task_owner(task_id)
+    if owner_id is None or owner_id != current_user.id:
+        raise NotFoundError("Task not found", code="TASK_NOT_FOUND")
     result = AsyncResult(task_id, app=celery_app)
     response: dict[str, object] = {"task_id": task_id, "state": result.state}
     if result.ready():
@@ -26,4 +32,3 @@ def get_task_status(task_id: str, current_user: User = Depends(get_current_user)
         else:
             response["result"] = str(payload)
     return response
-

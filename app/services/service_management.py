@@ -1,109 +1,154 @@
-import uuid
-from datetime import timedelta
-from typing import Any
+from typing import TYPE_CHECKING
 
 from temporalio import client as temporal_client
-from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
-from temporalio.exceptions import WorkflowAlreadyStartedError
 
-from app.core.exceptions import AppError
 from app.core.settings import settings
-from app.workflows.temporal_policies import WORKFLOW_RETRY
-from app.models import Provider, ServiceStatus, User, UserRole, provider_services
-from app.repositories import ServiceRepository
+from app.core.exceptions import AppError, ConflictError, ForbiddenError, NotFoundError, ValidationError
+from app.core.authorization import Permission, ServiceOwnershipGuard
+from app.core.authorization.service import check_permission
+from app.models import ServiceStatus, User, UserRole
+from app.repositories import ProviderRepository, ServiceRepository
 from app.services.base import BaseService
 from app.services.healthcare_event_service import HealthcareEventService
-from app.workflows.service_publish import ServicePublishWorkflow, chunk_service, embed_chunks, mark_published, structure_service, validate_service
 
-
-_LOCAL_PUBLISH_WORKFLOWS: dict[str, dict[str, Any]] = {}
-
-
-class _LocalWorkflowHandle:
-    def __init__(self, workflow_id: str) -> None:
-        self.workflow_id = workflow_id
-        self.run_id = str(uuid.uuid4())
-
-    async def query(self, query_name: str) -> Any:
-        if query_name == "publish_progress":
-            return _LOCAL_PUBLISH_WORKFLOWS[self.workflow_id]
-        if query_name != "publish_status":
-            raise AppError("Unsupported query", status_code=400, error_type="invalid_query")
-        return _LOCAL_PUBLISH_WORKFLOWS[self.workflow_id]["status"]
+if TYPE_CHECKING:
+    from app.services.adapters import WorkflowOrchestratorAdapter
 
 
 class ServiceManagementService(BaseService):
-    def __init__(self, db):
+    def __init__(self, db, orchestrator: "WorkflowOrchestratorAdapter | None" = None):
         super().__init__(db)
         self.repository = ServiceRepository(db)
+        self.providers = ProviderRepository(db)
+        self._orchestrator = orchestrator
 
     def create_service(self, payload, current_user: User):
-        if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+        check_permission(current_user, Permission.SERVICE_CREATE)
         if not self.repository.department_exists(payload.department_id):
-            raise AppError("Department not found", status_code=404, error_type="not_found")
+            raise NotFoundError("Department not found", code="DEPARTMENT_NOT_FOUND")
         service_data = payload.model_dump()
+        requested_provider_id = service_data.pop("provider_id", None)
         # Publication is a Temporal workflow; creation can only produce a draft.
         service_data["is_published"] = False
         service_data["status"] = ServiceStatus.DRAFT
-        provider = None
+
         if current_user.role == UserRole.provider:
-            provider = self.db.query(Provider).filter(Provider.user_id == current_user.id).first()
-            if not provider:
-                provider = Provider(user_id=current_user.id)
-                self.db.add(provider)
-                self.db.flush()
+            provider = self.providers.get_or_create_for_user(current_user.id)
+            if requested_provider_id is not None and requested_provider_id != provider.id:
+                raise ForbiddenError("Providers may only create services for themselves")
+        else:
+            if requested_provider_id is None:
+                raise ValidationError(
+                    "provider_id is required when creating a service",
+                    code="PROVIDER_REQUIRED",
+                )
+            provider = self.providers.get_by_id(requested_provider_id)
+            if provider is None:
+                raise NotFoundError("Provider not found", code="PROVIDER_NOT_FOUND")
+
         created = self.repository.create_service(service_data)
-        if provider:
-            self.db.execute(provider_services.insert().values(provider_id=provider.id, service_id=created.id))
-            self.db.commit()
-            self.db.refresh(created)
-        HealthcareEventService().publish_service_event("service.created", service_id=created.id, department_id=created.department_id, status=created.status.value)
+        self.providers.link_service_and_commit(provider, created.id)
+        self.repository.refresh(created)
+        HealthcareEventService(self.db).publish_service_event("service.created", service_id=created.id, department_id=created.department_id, status=created.status.value)
         return created
 
-    def update_service(self, service_id: int, payload, current_user: User):
-        if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
+    def get_service(self, service_id: int, current_user: User):
+        """Fetch a single service by ID with role-aware visibility."""
+        check_permission(current_user, Permission.SERVICE_READ)
         service = self.repository.get_by_id(service_id)
         if not service:
-            raise AppError("Service not found", status_code=404, error_type="not_found")
-        self._ensure_provider_service_access(service, current_user)
+            raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
+        # Patients can only see published services
+        if current_user.role == UserRole.patient and not service.published:
+            raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
+        self.log_info(
+            "Service fetched",
+            operation="get_service",
+            data={"service_id": service_id, "role": current_user.role},
+        )
+        return service
+
+    def list_services(
+        self,
+        offset: int,
+        limit: int,
+        current_user: User,
+        search: str | None = None,
+        department_id: int | None = None,
+    ):
+        """Return paginated services. Patients only see published; staff see all."""
+        check_permission(current_user, Permission.SERVICE_READ)
+        if current_user.role in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
+            if current_user.role == UserRole.provider:
+                provider = self.providers.get_by_user_id(current_user.id)
+                if provider is None:
+                    return [], 0
+                items, total = self.providers.list_services(provider.id, offset=offset, limit=limit)
+            else:
+                items, total = self.repository.list_all(offset=offset, limit=limit)
+        else:
+            items, total = self.repository.list_published(
+                offset=offset, limit=limit, search=search, department_id=department_id
+            )
+        self.log_info("Services listed", operation="list_services", data={"total": total})
+        return items, total
+
+    def update_service(self, service_id: int, payload, current_user: User):
+        service = self.repository.get_by_id(service_id)
+        if not service:
+            raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
+        ServiceOwnershipGuard(current_user, service).enforce()
         if not self.repository.department_exists(payload.department_id):
-            raise AppError("Department not found", status_code=404, error_type="not_found")
+            raise NotFoundError("Department not found", code="DEPARTMENT_NOT_FOUND")
         data = payload.model_dump()
-        data["status"] = service.status if payload.is_published else ServiceStatus.DRAFT
+        data.pop("provider_id", None)
+        data.pop("is_published", None)
         return self.repository.update_service(service, data)
 
     async def publish_service(self, service_id: int, current_user: User):
-        if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
         service = self.repository.get_by_id(service_id)
         if not service:
-            raise AppError("Service not found", status_code=404, error_type="not_found")
+            raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
         if current_user.role == UserRole.provider:
-            provider = self.db.query(Provider).filter(Provider.user_id == current_user.id).first()
+            provider = self.providers.get_by_user_id(current_user.id)
             if not provider or not provider.specialty or not provider.department_id:
                 raise AppError(
                     "Complete your provider profile before publishing a service",
                     status_code=409,
                     error_type="provider_profile_incomplete",
+                    code="PROVIDER_PROFILE_INCOMPLETE",
                 )
-        self._ensure_provider_service_access(service, current_user)
+        ServiceOwnershipGuard(current_user, service).enforce()
+        service = self.repository.recover_stale_publishing(service, settings.service_publish_stale_minutes)
         if service.status == ServiceStatus.PUBLISHED:
-            raise AppError("Service is already published", status_code=409, error_type="conflict")
+            raise ConflictError("Service is already published", code="SERVICE_ALREADY_PUBLISHED")
         if service.status == ServiceStatus.PUBLISHING:
-            raise AppError("Service publish is already in progress", status_code=409, error_type="conflict")
+            raise ConflictError("Service publish is already in progress", code="SERVICE_PUBLISHING")
         if service.status == ServiceStatus.UNPUBLISHING:
-            raise AppError("Service cannot be published while unpublishing", status_code=409, error_type="conflict")
+            raise ConflictError("Service cannot be published while unpublishing", code="SERVICE_UNPUBLISHING")
 
+        # Use injected orchestrator if available, otherwise lazy-load Temporal
+        if self._orchestrator:
+            workflow_id = f"service-publish-{service.id}"
+            return await self._orchestrator.start_service_publish_workflow(service_id, workflow_id)
+        
+        # Fallback: lazy-load Temporal (for backward compatibility)
+        from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
+        from temporalio.exceptions import WorkflowAlreadyStartedError
+        from app.workers.temporal.workflows.service_publish import ServicePublishWorkflow
+        from app.workers.temporal.policies import WORKFLOW_RETRY
+        from datetime import timedelta
+        
         workflow_id = f"service-publish-{service.id}"
         try:
             client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
         except Exception as exc:
             if settings.app_env.lower() in {"local", "test", "development"}:
-                handle = await self._start_local_publish_workflow(service.id, workflow_id)
+                from app.workers.temporal.runtime.service_publish import run_service_publish_locally
+
+                handle = await run_service_publish_locally(service.id, workflow_id)
                 return {"workflow_id": workflow_id, "run_id": handle.run_id}
-            raise AppError("Temporal workflow service is unavailable", status_code=503, error_type="workflow_unavailable") from exc
+            raise AppError("Temporal workflow service is unavailable", status_code=503, error_type="workflow_unavailable", code="TEMPORAL_UNAVAILABLE") from exc
         try:
             handle = await client.start_workflow(
                 ServicePublishWorkflow.run,
@@ -120,24 +165,48 @@ class ServiceManagementService(BaseService):
         return {"workflow_id": workflow_id, "run_id": handle.run_id}
 
     def unpublish_service(self, service_id: int, current_user: User):
-        if current_user.role not in {UserRole.admin, UserRole.front_desk, UserRole.provider}:
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
         service = self.repository.get_by_id(service_id)
         if not service:
-            raise AppError("Service not found", status_code=404, error_type="not_found")
-        self._ensure_provider_service_access(service, current_user)
+            raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
+        ServiceOwnershipGuard(current_user, service).enforce()
         if service.status != ServiceStatus.PUBLISHED:
-            raise AppError("Service is not published", status_code=409, error_type="conflict")
+            raise ConflictError("Service is not published", code="SERVICE_NOT_PUBLISHED")
         unpublished = self.repository.unpublish(service)
-        HealthcareEventService().publish_service_event("service.unpublished", service_id=unpublished.id, department_id=unpublished.department_id, status=unpublished.status.value)
+        HealthcareEventService(self.db).publish_service_event("service.unpublished", service_id=unpublished.id, department_id=unpublished.department_id, status=unpublished.status.value)
         return unpublished
+
+    def delete_service(self, service_id: int, current_user: User):
+        service = self.repository.get_by_id(service_id)
+        if not service:
+            raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
+        ServiceOwnershipGuard(current_user, service).enforce()
+        deleted = self.repository.delete(service)
+        from app.models.service import provider_services
+        self.db.execute(provider_services.delete().where(provider_services.c.service_id == service.id))
+        self.db.commit()
+        HealthcareEventService(self.db).publish_service_event(
+            "service.deleted",
+            service_id=deleted.id,
+            department_id=deleted.department_id,
+            status=deleted.status.value,
+        )
+        return deleted
 
     async def publish_status(self, service_id: int, current_user: User):
         service = self.repository.get_by_id(service_id)
         if not service:
-            raise AppError("Service not found", status_code=404, error_type="not_found")
-        self._ensure_provider_service_access(service, current_user)
+            raise NotFoundError("Service not found", code="SERVICE_NOT_FOUND")
+        ServiceOwnershipGuard(current_user, service).enforce()
         workflow_id = f"service-publish-{service.id}"
+        service = self.repository.recover_stale_publishing(service, settings.service_publish_stale_minutes)
+        
+        # Use injected orchestrator if available
+        if self._orchestrator:
+            return await self._orchestrator.get_workflow_status(workflow_id)
+        
+        # Fallback: lazy-load Temporal
+        from app.workers.temporal.runtime.service_publish import get_local_publish_progress
+
         try:
             client = await temporal_client.Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
             handle = client.get_workflow_handle(workflow_id)
@@ -146,50 +215,11 @@ class ServiceManagementService(BaseService):
                 return {"workflow_id": workflow_id, "status": progress}
             return {"workflow_id": workflow_id, **progress}
         except Exception as exc:
-            if workflow_id in _LOCAL_PUBLISH_WORKFLOWS:
-                return {"workflow_id": workflow_id, **_LOCAL_PUBLISH_WORKFLOWS[workflow_id]}
+            local_progress = get_local_publish_progress(workflow_id)
+            if local_progress is not None:
+                return {"workflow_id": workflow_id, **local_progress}
             if "not found" in str(exc).lower() or "workflow could not be found" in str(exc).lower():
                 if service.status == ServiceStatus.PUBLISHED:
                     return {"workflow_id": workflow_id, "status": ServiceStatus.PUBLISHED.value}
-                raise AppError("Publish workflow not found", status_code=404, error_type="workflow_not_found")
-            raise
-
-    def _ensure_provider_service_access(self, service, current_user: User) -> None:
-        if current_user.role != UserRole.provider:
-            return
-        provider = self.db.query(Provider).filter(Provider.user_id == current_user.id).first()
-        if not provider or not self.db.query(provider_services).filter(
-            provider_services.c.provider_id == provider.id,
-            provider_services.c.service_id == service.id,
-        ).first():
-            raise AppError("Forbidden", status_code=403, error_type="forbidden")
-
-    async def _start_local_publish_workflow(self, service_id: int, workflow_id: str) -> _LocalWorkflowHandle:
-        _LOCAL_PUBLISH_WORKFLOWS[workflow_id] = {
-            "status": ServiceStatus.PUBLISHING.value,
-            "stage": "VALIDATING",
-            "chunks_total": 0,
-            "embeddings_generated": 0,
-            "run_id": str(uuid.uuid4()),
-        }
-        try:
-            published = await validate_service(service_id)
-            if published["status"] == ServiceStatus.PUBLISHED.value:
-                _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = ServiceStatus.PUBLISHED.value
-                _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "COMPLETE"
-                return _LocalWorkflowHandle(workflow_id)
-
-            service_struct = await structure_service(published["service"])
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "CHUNKING"
-            chunks = await chunk_service(service_struct)
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id].update({"stage": "EMBEDDING", "chunks_total": len(chunks)})
-            embedded_chunks = await embed_chunks(chunks)
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id].update({"stage": "PERSISTING", "embeddings_generated": len(embedded_chunks)})
-            await mark_published({"service_id": service_id, "chunks": embedded_chunks})
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["stage"] = "COMPLETE"
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = ServiceStatus.PUBLISHED.value
-            return _LocalWorkflowHandle(workflow_id)
-        except Exception as exc:
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["status"] = "FAILED"
-            _LOCAL_PUBLISH_WORKFLOWS[workflow_id]["error"] = str(exc)
+                raise NotFoundError("Publish workflow not found", code="WORKFLOW_NOT_FOUND")
             raise
